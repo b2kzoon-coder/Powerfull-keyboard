@@ -1,5 +1,7 @@
 package com.example.settings
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -541,6 +543,11 @@ fun SettingsHomeScreen(
               } else {
                 val intent = ApkInstallerHelper.createInstallUnknownAppsIntent(context)
                 runCatching { context.startActivity(intent) }
+                  .onFailure { err ->
+                    viewModel.reportInstallError(
+                      err.localizedMessage ?: "Unable to open permission settings for APK installation"
+                    )
+                  }
               }
             },
           )
@@ -890,6 +897,27 @@ private fun AppUpdateSection(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(text = stringResource(R.string.update_btn_retry))
+          }
+        }
+
+        if (!updateState.fallbackMirrorUrl.isNullOrBlank()) {
+          TextButton(
+            onClick = {
+              val mirrorIntent =
+                Intent(Intent.ACTION_VIEW, Uri.parse(updateState.fallbackMirrorUrl)).apply {
+                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+              runCatching { context.startActivity(mirrorIntent) }
+            },
+            modifier = Modifier.fillMaxWidth().testTag("fallback_mirror_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.ArrowDownward,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = "Download via Mirror (GoFile)")
           }
         }
       }

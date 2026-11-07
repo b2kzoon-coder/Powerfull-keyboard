@@ -117,6 +117,9 @@ data class VoiceUiState(
   val isOnDeviceActive: Boolean = false,
   val noiseCancellationEnabled: Boolean = true,
   val voiceEnhancementEnabled: Boolean = true,
+  val autoPunctuationEnabled: Boolean = true,
+  val voiceInputEnabled: Boolean = true,
+  val waveformAndHapticsEnabled: Boolean = true,
   val audioProcessingInfo: AudioProcessingInfo = AudioProcessingInfo(),
   val activeEngineDescription: String = "Google Speech Services",
 )

@@ -9,6 +9,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
+import java.util.zip.ZipFile
 import kotlin.math.min
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,9 +26,12 @@ class GitHubUpdateManager(
   // Configurable repository target with safe default
   companion object {
     const val DEFAULT_GITHUB_REPO = "b2kzoon-coder/Powerfull-keyboard"
+    const val DEFAULT_APK_FILE_NAME = "app-release.apk"
+    const val FALLBACK_GOFILE_MIRROR_URL = "https://gofile.io/d/KCGFMWpM"
     private const val GITHUB_API_URL = "https://api.github.com/repos"
     private const val GITHUB_WEB_URL = "https://github.com"
     private const val TIMEOUT_MS = 15000
+    private const val MAX_REDIRECTS = 10
     private const val UPDATES_DIR = "updates"
 
     private const val PREFS_NAME = "github_update_manager_prefs"
@@ -48,6 +52,11 @@ class GitHubUpdateManager(
 
   var repositorySlug: String = DEFAULT_GITHUB_REPO
   var enableWebFallbackOnRateLimit: Boolean = true
+
+  internal var connectionFactory: ((URL) -> HttpURLConnection)? = null
+  internal var webFallbackFetcher: (() -> GitHubReleaseInfo?)? = null
+
+  fun getLastAutoCheckMs(): Long = prefs.getLong(KEY_LAST_AUTO_CHECK_MS, 0L)
 
   fun shouldPerformAutomaticCheck(nowMs: Long = System.currentTimeMillis()): Boolean {
     val backoffUntil = prefs.getLong(KEY_BACKOFF_UNTIL_MS, 0L)
@@ -196,8 +205,14 @@ class GitHubUpdateManager(
             val webResult = runCatching { fetchReleaseViaWebFallback() }
             if (webResult.isSuccess) {
               val release = webResult.getOrNull()
-              prefs.edit().putLong(KEY_LAST_AUTO_CHECK_MS, nowMs).apply()
-              return@runCatching release
+              if (release != null) {
+                prefs
+                  .edit()
+                  .putString(KEY_CACHED_RELEASE_JSON, serializeReleaseInfo(release).toString())
+                  .putLong(KEY_LAST_AUTO_CHECK_MS, nowMs)
+                  .apply()
+                return@runCatching release
+              }
             }
           }
           getCachedReleaseInfo()?.let { return@runCatching it }
@@ -207,7 +222,7 @@ class GitHubUpdateManager(
         val endpoint = "$GITHUB_API_URL/$repositorySlug/releases/latest"
         val url = URL(endpoint)
         val connection =
-          (url.openConnection() as HttpURLConnection).apply {
+          (connectionFactory?.invoke(url) ?: (url.openConnection() as HttpURLConnection)).apply {
             requestMethod = "GET"
             connectTimeout = TIMEOUT_MS
             readTimeout = TIMEOUT_MS
@@ -268,9 +283,10 @@ class GitHubUpdateManager(
                   prefs
                     .edit()
                     .putString(KEY_CACHED_RELEASE_JSON, serializeReleaseInfo(release).toString())
+                    .putLong(KEY_LAST_AUTO_CHECK_MS, nowMs)
                     .apply()
+                  return@runCatching release
                 }
-                return@runCatching release
               }
             }
 
@@ -302,6 +318,7 @@ class GitHubUpdateManager(
    * Does not require an API token and does not count against api.github.com's 60 req/hr limit.
    */
   internal fun fetchReleaseViaWebFallback(): GitHubReleaseInfo? {
+    webFallbackFetcher?.let { return it() }
     val latestWebUrl = "$GITHUB_WEB_URL/$repositorySlug/releases/latest"
     val conn =
       (URL(latestWebUrl).openConnection() as HttpURLConnection).apply {
@@ -354,20 +371,118 @@ class GitHubUpdateManager(
     return null
   }
 
+  fun buildPublicGitHubAssetUrl(
+    tagName: String,
+    assetFileName: String = DEFAULT_APK_FILE_NAME,
+  ): String {
+    val safeAsset = assetFileName.trim().ifEmpty { DEFAULT_APK_FILE_NAME }
+    val safeTag = tagName.trim()
+    return if (safeTag.isNotEmpty()) {
+      "$GITHUB_WEB_URL/$repositorySlug/releases/download/$safeTag/$safeAsset"
+    } else {
+      "$GITHUB_WEB_URL/$repositorySlug/releases/latest/download/$safeAsset"
+    }
+  }
+
+  fun isDirectPublicDownloadUrl(url: String?): Boolean {
+    val trimmed = url?.trim().orEmpty()
+    if (trimmed.isEmpty()) return false
+    if (!trimmed.startsWith("https://", ignoreCase = true) &&
+      !trimmed.startsWith("http://", ignoreCase = true)
+    ) {
+      return false
+    }
+    val lower = trimmed.lowercase()
+    // Reject session-authenticated Google AI Studio preview/dev URLs, auth bridges, or HTML landing pages
+    if (lower.contains(".run.app") ||
+      lower.contains("aistudio.google.com") ||
+      lower.contains("__cookie_check.html") ||
+      lower.contains("applet-auth-bridge") ||
+      lower.contains("gofile.io/d/")
+    ) {
+      return false
+    }
+    return true
+  }
+
+  fun resolvePublicApkDownloadUrl(
+    rawUrl: String?,
+    tagName: String,
+    assetFileName: String = DEFAULT_APK_FILE_NAME,
+  ): String {
+    val candidate = rawUrl?.trim().orEmpty()
+    val expanded =
+      when {
+        candidate.startsWith("/") -> "$GITHUB_WEB_URL$candidate"
+        else -> candidate
+      }
+    return if (isDirectPublicDownloadUrl(expanded)) {
+      expanded
+    } else {
+      buildPublicGitHubAssetUrl(tagName = tagName, assetFileName = assetFileName)
+    }
+  }
+
+  fun isValidApkContentType(contentType: String?): Boolean {
+    if (contentType.isNullOrBlank()) return true
+    val mime = contentType.substringBefore(';').trim().lowercase()
+    if (mime == "text/html" ||
+      mime == "application/xhtml+xml" ||
+      mime == "text/plain" ||
+      mime == "application/json" ||
+      mime.startsWith("text/")
+    ) {
+      return false
+    }
+    return true
+  }
+
+  fun verifyDownloadedApkFile(file: File, expectedSizeBytes: Long = -1L) {
+    if (!file.exists() || file.length() <= 4L) {
+      throw IllegalStateException("Downloaded APK file is empty or missing")
+    }
+    if (expectedSizeBytes > 0L && file.length() != expectedSizeBytes) {
+      throw IllegalStateException(
+        "APK size mismatch: expected $expectedSizeBytes bytes, got ${file.length()} bytes"
+      )
+    }
+    val header = ByteArray(4)
+    val readCount = file.inputStream().use { it.read(header) }
+    if (readCount < 4 ||
+      header[0] != 0x50.toByte() ||
+      header[1] != 0x4B.toByte() ||
+      header[2] != 0x03.toByte() ||
+      header[3] != 0x04.toByte()
+    ) {
+      throw IllegalStateException(
+        "Downloaded file is not a valid APK binary (invalid ZIP/APK magic header)"
+      )
+    }
+    val hasManifest =
+      runCatching {
+        ZipFile(file).use { zip -> zip.getEntry("AndroidManifest.xml") != null }
+      }.getOrDefault(false)
+    if (!hasManifest) {
+      throw IllegalStateException(
+        "Downloaded archive is corrupted or missing AndroidManifest.xml"
+      )
+    }
+  }
+
   fun parseWebExpandedAssetsHtml(tagName: String, html: String): GitHubReleaseInfo? {
-    // Match href="/<owner>/<repo>/releases/download/<tag>/<file>.apk"
+    // Match href="/<owner>/<repo>/releases/download/<tag>/<file>.apk" or full https://github.com/...
     val hrefRegex =
       Regex(
-        """href=["'](/[^"']+/releases/download/[^"']+\.apk)["']""",
+        """href=["']((?:https?://github\.com)?/[^"']+/releases/download/[^"']+\.apk)["']""",
         RegexOption.IGNORE_CASE,
       )
     val match = hrefRegex.find(html) ?: return null
-    val relativePath = match.groupValues[1]
-    val fullDownloadUrl =
-      if (relativePath.startsWith("http")) relativePath else "$GITHUB_WEB_URL$relativePath"
+    val rawPath = match.groupValues[1]
     val fileName =
-      runCatching { URLDecoder.decode(relativePath.substringAfterLast('/'), "UTF-8") }
-        .getOrDefault("app-release.apk")
+      runCatching { URLDecoder.decode(rawPath.substringAfterLast('/'), "UTF-8") }
+        .getOrDefault(DEFAULT_APK_FILE_NAME)
+        .ifBlank { DEFAULT_APK_FILE_NAME }
+    val fullDownloadUrl = resolvePublicApkDownloadUrl(rawPath, tagName, fileName)
 
     val cleanedTag = tagName.removePrefix("v").removePrefix("V")
     val versionName = if (cleanedTag.isNotEmpty()) cleanedTag else tagName
@@ -401,7 +516,7 @@ class GitHubUpdateManager(
     // Locate APK asset from assets list
     val assetsArray = jsonObj.optJSONArray("assets") ?: JSONArray()
     var apkAssetUrl: String? = null
-    var apkAssetName = "PersonalKeyboard-update.apk"
+    var apkAssetName = DEFAULT_APK_FILE_NAME
     var apkAssetSize: Long = 0L
 
     for (i in 0 until assetsArray.length()) {
@@ -413,8 +528,8 @@ class GitHubUpdateManager(
       if (assetName.endsWith(".apk", ignoreCase = true) ||
         contentType == "application/vnd.android.package-archive"
       ) {
-        apkAssetUrl = browserDownloadUrl
-        apkAssetName = assetName
+        apkAssetName = assetName.ifBlank { DEFAULT_APK_FILE_NAME }
+        apkAssetUrl = resolvePublicApkDownloadUrl(browserDownloadUrl, tagName, apkAssetName)
         apkAssetSize = asset.optLong("size", 0L)
         break
       }
@@ -452,43 +567,78 @@ class GitHubUpdateManager(
   ): Result<File> =
     withContext(Dispatchers.IO) {
       runCatching {
+        if (!isDirectPublicDownloadUrl(downloadUrl)) {
+          throw IllegalStateException(
+            "Download URL requires browser authentication or session cookies: $downloadUrl"
+          )
+        }
+
+        val safeFileName = fileName.trim().ifEmpty { DEFAULT_APK_FILE_NAME }
         val updatesDir = File(appContext.cacheDir, UPDATES_DIR).apply { mkdirs() }
-        val targetFile = File(updatesDir, fileName)
+        val targetFile = File(updatesDir, safeFileName)
+        val tempFile = File(updatesDir, "$safeFileName.part")
         if (targetFile.exists()) {
           targetFile.delete()
         }
+        if (tempFile.exists()) {
+          tempFile.delete()
+        }
 
-        var currentUrl = downloadUrl
+        var currentUrl = downloadUrl.trim()
         var redirects = 0
         var connection: HttpURLConnection
 
         while (true) {
+          if (!isDirectPublicDownloadUrl(currentUrl)) {
+            throw IllegalStateException(
+              "Redirected to session-authenticated or non-direct URL: $currentUrl"
+            )
+          }
+
           val url = URL(currentUrl)
           connection =
-            (url.openConnection() as HttpURLConnection).apply {
+            (connectionFactory?.invoke(url) ?: (url.openConnection() as HttpURLConnection)).apply {
+              requestMethod = "GET"
               connectTimeout = TIMEOUT_MS
               readTimeout = TIMEOUT_MS
-              instanceFollowRedirects = true
+              instanceFollowRedirects = false
               setRequestProperty("User-Agent", "PersonalKeyboard-Updater/${BuildConfig.VERSION_NAME}")
+              setRequestProperty(
+                "Accept",
+                "application/vnd.android.package-archive, application/octet-stream, */*",
+              )
             }
 
           val status = connection.responseCode
           if (status == HttpURLConnection.HTTP_MOVED_TEMP ||
             status == HttpURLConnection.HTTP_MOVED_PERM ||
+            status == HttpURLConnection.HTTP_SEE_OTHER ||
             status == 307 ||
             status == 308
           ) {
-            val newUrl = connection.getHeaderField("Location")
-            if (newUrl.isNullOrBlank() || redirects++ >= 5) {
+            val location = connection.getHeaderField("Location")
+            connection.disconnect()
+            if (location.isNullOrBlank()) {
+              throw IllegalStateException("Redirect response (HTTP $status) missing Location header")
+            }
+            if (redirects++ >= MAX_REDIRECTS) {
               throw IllegalStateException("Too many redirects downloading APK")
             }
-            connection.disconnect()
-            currentUrl = newUrl
+            currentUrl = URL(url, location).toString()
             continue
           }
 
           if (status !in 200..299) {
+            connection.disconnect()
             throw IllegalStateException("HTTP error $status during APK download")
+          }
+
+          val contentType = connection.contentType ?: connection.getHeaderField("Content-Type")
+          if (!isValidApkContentType(contentType)) {
+            connection.disconnect()
+            throw IllegalStateException(
+              "Invalid content type '$contentType' (expected APK binary, received web/text response)"
+            )
           }
           break
         }
@@ -496,30 +646,49 @@ class GitHubUpdateManager(
         val totalLength = connection.contentLengthLong
         var totalBytesRead = 0L
 
-        connection.inputStream.use { input: InputStream ->
-          FileOutputStream(targetFile).use { output ->
-            val buffer = ByteArray(32768)
-            var bytesRead: Int
-            var lastReportedPercent = -1
+        try {
+          connection.inputStream.use { input: InputStream ->
+            FileOutputStream(tempFile).use { output ->
+              val buffer = ByteArray(32768)
+              var bytesRead: Int
+              var lastReportedPercent = -1
 
-            while (input.read(buffer).also { bytesRead = it } != -1) {
-              output.write(buffer, 0, bytesRead)
-              totalBytesRead += bytesRead
+              while (input.read(buffer).also { bytesRead = it } != -1) {
+                output.write(buffer, 0, bytesRead)
+                totalBytesRead += bytesRead
 
-              val percent =
-                if (totalLength > 0) {
-                  ((totalBytesRead * 100) / totalLength).toInt().coerceIn(0, 100)
-                } else {
-                  -1
+                val percent =
+                  if (totalLength > 0) {
+                    ((totalBytesRead * 100) / totalLength).toInt().coerceIn(0, 100)
+                  } else {
+                    -1
+                  }
+
+                if (percent != lastReportedPercent) {
+                  lastReportedPercent = percent
+                  onProgress(percent, totalBytesRead, totalLength)
                 }
-
-              if (percent != lastReportedPercent) {
-                lastReportedPercent = percent
-                onProgress(percent, totalBytesRead, totalLength)
               }
+              output.flush()
             }
-            output.flush()
           }
+        } finally {
+          connection.disconnect()
+        }
+
+        runCatching {
+          verifyDownloadedApkFile(
+            file = tempFile,
+            expectedSizeBytes = if (totalLength > 0L) totalLength else -1L,
+          )
+        }.onFailure { err ->
+          tempFile.delete()
+          throw err
+        }
+
+        if (!tempFile.renameTo(targetFile)) {
+          tempFile.copyTo(targetFile, overwrite = true)
+          tempFile.delete()
         }
 
         targetFile
@@ -572,13 +741,16 @@ class GitHubUpdateManager(
   }
 
   private fun deserializeCachedReleaseInfo(obj: JSONObject): GitHubReleaseInfo {
+    val tagName = obj.optString("tagName", "")
+    val apkFileName = obj.optString("apkFileName", DEFAULT_APK_FILE_NAME).ifBlank { DEFAULT_APK_FILE_NAME }
+    val rawUrl = obj.optString("apkDownloadUrl", "")
     return GitHubReleaseInfo(
-      tagName = obj.optString("tagName", ""),
+      tagName = tagName,
       versionName = obj.optString("versionName", ""),
       versionCode = obj.optInt("versionCode", 0),
       releaseNotes = obj.optString("releaseNotes", ""),
-      apkDownloadUrl = obj.optString("apkDownloadUrl", ""),
-      apkFileName = obj.optString("apkFileName", "app-release.apk"),
+      apkDownloadUrl = resolvePublicApkDownloadUrl(rawUrl, tagName, apkFileName),
+      apkFileName = apkFileName,
       apkSizeBytes = obj.optLong("apkSizeBytes", 0L),
       publishedAt = obj.optString("publishedAt", ""),
     )

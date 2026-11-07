@@ -140,25 +140,33 @@ class SettingsViewModel(
     val manager = updateManager ?: return
     if (_updateState.value is UpdateUiState.Downloading) return
 
+    val resolvedUrl =
+      manager.resolvePublicApkDownloadUrl(
+        rawUrl = release.apkDownloadUrl,
+        tagName = release.tagName,
+        assetFileName = release.apkFileName,
+      )
+    val effectiveRelease = release.copy(apkDownloadUrl = resolvedUrl)
+
     downloadJob?.cancel()
     downloadJob =
       viewModelScope.launch {
         _updateState.value =
           UpdateUiState.Downloading(
-            releaseInfo = release,
+            releaseInfo = effectiveRelease,
             progressPercent = 0,
             bytesDownloaded = 0L,
-            totalBytes = release.apkSizeBytes,
+            totalBytes = effectiveRelease.apkSizeBytes,
           )
 
         val downloadResult =
           manager.downloadApk(
-            downloadUrl = release.apkDownloadUrl,
-            fileName = release.apkFileName,
+            downloadUrl = effectiveRelease.apkDownloadUrl,
+            fileName = effectiveRelease.apkFileName,
             onProgress = { percent, downloaded, total ->
               _updateState.value =
                 UpdateUiState.Downloading(
-                  releaseInfo = release,
+                  releaseInfo = effectiveRelease,
                   progressPercent = percent,
                   bytesDownloaded = downloaded,
                   totalBytes = total,
@@ -173,7 +181,7 @@ class SettingsViewModel(
               is ApkSecurityVerifier.VerificationResult.Success -> {
                 _updateState.value =
                   UpdateUiState.ReadyToInstall(
-                    releaseInfo = release,
+                    releaseInfo = effectiveRelease,
                     apkFilePath = apkFile.absolutePath,
                   )
               }
@@ -183,6 +191,7 @@ class SettingsViewModel(
                   UpdateUiState.Error(
                     message = "Verification failed: ${verifyResult.reason}",
                     isNetworkError = false,
+                    fallbackMirrorUrl = GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
                   )
               }
             }
@@ -190,8 +199,9 @@ class SettingsViewModel(
           onFailure = { error ->
             _updateState.value =
               UpdateUiState.Error(
-                message = error.localizedMessage ?: "Download failed",
+                message = "Download failed: ${error.localizedMessage ?: "Unable to download APK"}",
                 isNetworkError = true,
+                fallbackMirrorUrl = GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
               )
           },
         )
@@ -200,7 +210,25 @@ class SettingsViewModel(
 
   fun installDownloadedApk(context: Context, apkFilePath: String): Result<Unit> {
     val file = File(apkFilePath)
-    return ApkInstallerHelper.launchApkInstaller(context, file)
+    val result = ApkInstallerHelper.launchApkInstaller(context, file)
+    result.onFailure { error ->
+      _updateState.value =
+        UpdateUiState.Error(
+          message = "Installation failed: ${error.localizedMessage ?: "Could not launch package installer"}",
+          isNetworkError = false,
+          fallbackMirrorUrl = GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
+        )
+    }
+    return result
+  }
+
+  fun reportInstallError(message: String) {
+    _updateState.value =
+      UpdateUiState.Error(
+        message = "Installation failed: $message",
+        isNetworkError = false,
+        fallbackMirrorUrl = GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
+      )
   }
 
   fun setCustomUpdateState(state: UpdateUiState) {

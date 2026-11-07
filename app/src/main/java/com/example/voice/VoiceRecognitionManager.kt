@@ -76,15 +76,27 @@ class VoiceRecognitionManager(
     private set
   var isVoiceEnhancementEnabled: Boolean = true
     private set
+  var isAutoPunctuationEnabled: Boolean = false
+    internal set
+  var isWaveformAndHapticsEnabled: Boolean = true
+    internal set
+  var isVoiceInputEnabled: Boolean = true
+    internal set
 
   fun updatePreferences(
     mode: VoiceRecognitionMode,
     noiseCancellation: Boolean,
     voiceEnhancement: Boolean,
+    autoPunctuation: Boolean = false,
+    waveformAndHaptics: Boolean = true,
+    voiceInputEnabled: Boolean = true,
   ) {
     recognitionMode = mode
     isNoiseCancellationEnabled = noiseCancellation
     isVoiceEnhancementEnabled = voiceEnhancement
+    isAutoPunctuationEnabled = autoPunctuation
+    isWaveformAndHapticsEnabled = waveformAndHaptics
+    this.isVoiceInputEnabled = voiceInputEnabled
     val isOnline = isNetworkConnected()
     val audioInfo = getAudioProcessingInfo()
     _uiState.update {
@@ -92,6 +104,9 @@ class VoiceRecognitionManager(
         recognitionMode = mode,
         noiseCancellationEnabled = noiseCancellation,
         voiceEnhancementEnabled = voiceEnhancement,
+        autoPunctuationEnabled = autoPunctuation,
+        waveformAndHapticsEnabled = waveformAndHaptics,
+        voiceInputEnabled = voiceInputEnabled,
         isOnline = isOnline,
         audioProcessingInfo = audioInfo,
       )
@@ -243,6 +258,23 @@ class VoiceRecognitionManager(
       rmsLogCounter = 0
       finalResultDeliveredInSession = false
       safelyDestroyRecognizer()
+
+      if (!isVoiceInputEnabled) {
+        ImeDiagnosticsLogger.log(
+          category = "VOICE_TYPING",
+          event = "startListening_disabled",
+          details = "voiceInputEnabled=false",
+        )
+        Log.w(TAG, "startListening aborted: voiceInputEnabled is false")
+        _uiState.update {
+          it.copy(
+            state = VoiceState.IDLE,
+            errorMessage = "Voice input is disabled in settings",
+          )
+        }
+        onListeningStateChanged?.invoke(false)
+        return@runOnMainThread
+      }
 
       val hasPermission = hasRecordAudioPermission()
       if (!hasPermission) {
@@ -682,7 +714,13 @@ class VoiceRecognitionManager(
       onListeningStateChanged?.invoke(false)
       if (textToCommit.isNotBlank() && !finalResultDeliveredInSession) {
         finalResultDeliveredInSession = true
-        onSpeechRecognized(textToCommit)
+        val formatted =
+          formatRecognizedOutput(
+            textToCommit,
+            _uiState.value.selectedLanguage,
+            autoPunctuate = isAutoPunctuationEnabled,
+          )
+        onSpeechRecognized(formatted)
       }
     }
   }
@@ -699,7 +737,12 @@ class VoiceRecognitionManager(
   @androidx.annotation.VisibleForTesting
   internal fun simulateTranscription(rawText: String, isFinal: Boolean) {
     val language = _uiState.value.selectedLanguage
-    val formatted = formatRecognizedOutput(rawText, language)
+    val formatted =
+      formatRecognizedOutput(
+        rawText,
+        language,
+        autoPunctuate = isAutoPunctuationEnabled && isFinal,
+      )
     if (isFinal) {
       clearAllTimers()
       safelyDestroyRecognizer()
@@ -881,7 +924,8 @@ class VoiceRecognitionManager(
       override fun onRmsChanged(rmsdB: Float) {
         if (activeRecognitionListener !== this) return
         val safeRms = if (rmsdB < 0f) 0f else rmsdB
-        val normalized = (safeRms / 10f).coerceIn(0f, 1f)
+        val rawNormalized = (safeRms / 10f).coerceIn(0f, 1f)
+        val normalized = if (isWaveformAndHapticsEnabled) rawNormalized else 0f
         val previous = _uiState.value.rmsNormalized
         if (
           kotlin.math.abs(normalized - previous) >= 0.05f ||
@@ -896,7 +940,7 @@ class VoiceRecognitionManager(
           ImeDiagnosticsLogger.log(
             category = "VOICE_TYPING",
             event = "onRmsChanged",
-            details = "rmsdB=$rmsdB normalized=$normalized state=${_uiState.value.state}",
+            details = "rmsdB=$rmsdB normalized=$normalized waveformEnabled=$isWaveformAndHapticsEnabled state=${_uiState.value.state}",
           )
         }
       }
@@ -1086,7 +1130,8 @@ class VoiceRecognitionManager(
             else -> fallbackPartial
           }
 
-        val formattedResult = formatRecognizedOutput(bestResult, language, autoPunctuate = false)
+        val formattedResult =
+          formatRecognizedOutput(bestResult, language, autoPunctuate = isAutoPunctuationEnabled)
 
         // Reset retry guard after successful recognition; if network connectivity is healthy again,
         // automatically switch back to online/hybrid mode for subsequent sessions.

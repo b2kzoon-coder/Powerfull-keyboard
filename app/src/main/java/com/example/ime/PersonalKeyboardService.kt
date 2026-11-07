@@ -157,8 +157,20 @@ class PersonalKeyboardService :
   val voiceRmsScaleState: androidx.compose.runtime.State<Float> = _voiceRmsScaleComposeState
   private var rmsScaleAnimator: ValueAnimator? = null
 
+  private fun triggerVoiceHaptic() {
+    if (::preferencesRepository.isInitialized && preferencesRepository.config.value.voiceWaveformAndHaptics) {
+      triggerKeyFeedback(KeyFeedbackType.FUNCTIONAL)
+    }
+  }
+
   fun handleVoiceRmsChanged(normalizedRms: Float) {
-    if (!_isVoiceTypingOpen.value) {
+    val waveformEnabled =
+      if (::preferencesRepository.isInitialized) {
+        preferencesRepository.config.value.voiceWaveformAndHaptics
+      } else {
+        true
+      }
+    if (!_isVoiceTypingOpen.value || !waveformEnabled) {
       if (_voiceRmsScaleComposeState.floatValue != 1.0f) {
         resetVoiceRmsScale()
       }
@@ -176,6 +188,16 @@ class PersonalKeyboardService :
   fun animateVoiceRmsScale(targetScale: Float, durationMs: Long = 50L) {
     if (Looper.myLooper() != Looper.getMainLooper()) {
       mainHandler.post { animateVoiceRmsScale(targetScale, durationMs) }
+      return
+    }
+    val waveformEnabled =
+      if (::preferencesRepository.isInitialized) {
+        preferencesRepository.config.value.voiceWaveformAndHaptics
+      } else {
+        true
+      }
+    if (!waveformEnabled && targetScale != 1.0f) {
+      _voiceRmsScaleComposeState.floatValue = 1.0f
       return
     }
     val current = _voiceRmsScaleComposeState.floatValue
@@ -278,7 +300,16 @@ class PersonalKeyboardService :
           mode = cfg.voiceRecognitionMode,
           noiseCancellation = cfg.voiceNoiseCancellation,
           voiceEnhancement = cfg.voiceEnhancement,
+          autoPunctuation = cfg.voiceAutoPunctuation,
+          waveformAndHaptics = cfg.voiceWaveformAndHaptics,
+          voiceInputEnabled = cfg.voiceInputEnabled,
         )
+        if (!cfg.voiceInputEnabled && _isVoiceTypingOpen.value) {
+          cancelActiveVoiceSessionIfNeeded()
+        }
+        if (!cfg.voiceWaveformAndHaptics && _voiceRmsScaleComposeState.floatValue != 1.0f) {
+          resetVoiceRmsScale()
+        }
         if (languageManager.activeLanguage.value.id != cfg.activeLanguageId) {
           languageManager.setActiveLanguage(cfg.activeLanguageId)
         }
@@ -361,6 +392,9 @@ class PersonalKeyboardService :
         mode = cfg.voiceRecognitionMode,
         noiseCancellation = cfg.voiceNoiseCancellation,
         voiceEnhancement = cfg.voiceEnhancement,
+        autoPunctuation = cfg.voiceAutoPunctuation,
+        waveformAndHaptics = cfg.voiceWaveformAndHaptics,
+        voiceInputEnabled = cfg.voiceInputEnabled,
       )
     }
     mgr.setLanguage(VoiceLanguage.forLanguageId(languageManager.activeLanguage.value.id))
@@ -493,19 +527,29 @@ class PersonalKeyboardService :
             }
           }
           val onStartVoiceListeningCallback: () -> Unit = remember {
-            { voiceRecognitionManager.startListening() }
+            {
+              if (preferencesRepository.config.value.voiceInputEnabled) {
+                triggerVoiceHaptic()
+                voiceRecognitionManager.startListening()
+              }
+            }
           }
           val onStopVoiceListeningCallback: () -> Unit = remember {
-            { voiceRecognitionManager.stopListening() }
+            {
+              triggerVoiceHaptic()
+              voiceRecognitionManager.stopListening()
+            }
           }
           val onCancelVoiceCallback: () -> Unit = remember {
             {
+              triggerVoiceHaptic()
               voiceRecognitionManager.cancel()
               setVoiceTypingOpen(false)
             }
           }
           val onInsertVoiceCallback: () -> Unit = remember {
             {
+              triggerVoiceHaptic()
               voiceRecognitionManager.commitAndFinish()
               setVoiceTypingOpen(false)
             }
@@ -1525,6 +1569,22 @@ class PersonalKeyboardService :
   }
 
   fun toggleVoiceTyping() {
+    val voiceEnabled =
+      if (::preferencesRepository.isInitialized) {
+        preferencesRepository.config.value.voiceInputEnabled
+      } else {
+        true
+      }
+    if (!voiceEnabled) {
+      ImeDiagnosticsLogger.log(
+        category = "VOICE_TYPING",
+        event = "toggleVoiceTyping_disabled",
+        details = "voiceInputEnabled=false",
+      )
+      Log.d("PersonalKeyboardVoice", "toggleVoiceTyping: voiceInputEnabled is false, aborting")
+      return
+    }
+
     val currentVoiceState = _voiceRecognitionManager?.uiState?.value?.state ?: VoiceState.IDLE
     val hasActiveRecognizer = _voiceRecognitionManager?.hasActiveRecognizer == true
     val isCurrentlyActive =
@@ -1534,6 +1594,7 @@ class PersonalKeyboardService :
         currentVoiceState == VoiceState.STARTING ||
         currentVoiceState == VoiceState.PROCESSING
     if (!isCurrentlyActive) {
+      triggerVoiceHaptic()
       commitAllPhoneticBuffers()
       resetVoiceUtteranceState()
       _isLanguageSelectorOpen.value = false
@@ -1555,6 +1616,7 @@ class PersonalKeyboardService :
       voiceRecognitionManager.setLanguage(voiceLang)
       voiceRecognitionManager.startListening(voiceLang)
     } else {
+      triggerVoiceHaptic()
       ImeDiagnosticsLogger.log(
         category = "VOICE_TYPING",
         event = "toggleVoiceTyping_stop",

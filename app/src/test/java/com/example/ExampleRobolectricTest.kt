@@ -4271,6 +4271,163 @@ class ExampleRobolectricTest {
   }
 
   @Test
+  fun testBug5AutomaticUpdateCheckTimestampUpdatedAfterSuccessfulWebFallback() =
+    kotlinx.coroutines.runBlocking {
+      val context = ApplicationProvider.getApplicationContext<Context>()
+      val updateManager = com.example.update.GitHubUpdateManager(context)
+      updateManager.clearRateLimitAndCache()
+
+      fun createMockHttpConn(
+        code: Int,
+        errorText: String = "",
+        headers: Map<String, String> = emptyMap(),
+      ): java.net.HttpURLConnection {
+        val dummyUrl = java.net.URL("https://api.github.com/dummy")
+        return object : java.net.HttpURLConnection(dummyUrl) {
+          override fun getResponseCode(): Int = code
+          override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(errorText.toByteArray())
+          override fun getInputStream(): java.io.InputStream = java.io.ByteArrayInputStream("{}".toByteArray())
+          override fun getHeaderField(name: String?): String? = headers[name]
+          override fun connect() {}
+          override fun disconnect() {}
+          override fun usingProxy(): Boolean = false
+        }
+      }
+
+      val mockRelease =
+        com.example.update.GitHubReleaseInfo(
+          tagName = "v1.0.3",
+          versionName = "1.0.3",
+          versionCode = 4,
+          releaseNotes = "Web fallback release",
+          apkDownloadUrl = "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk",
+          apkFileName = "app-release.apk",
+          apkSizeBytes = 31000000L,
+          publishedAt = "2026-11-07T00:00:00Z",
+        )
+
+      // -------------------------------------------------------------
+      // 1. TEST SUCCESSFUL HTTP 403 FALLBACK
+      // -------------------------------------------------------------
+      updateManager.connectionFactory = {
+        createMockHttpConn(
+          code = 403,
+          errorText = """{"message":"API rate limit exceeded for client"}""",
+          headers = mapOf("X-RateLimit-Remaining" to "0"),
+        )
+      }
+      updateManager.webFallbackFetcher = { mockRelease }
+
+      val startMs = System.currentTimeMillis()
+      assertEquals(0L, updateManager.getLastAutoCheckMs())
+
+      val result403 = updateManager.checkForUpdates(forceRefresh = false)
+      assertTrue(result403.isSuccess)
+      assertEquals(mockRelease, result403.getOrNull())
+
+      val lastAutoCheckAfter403 = updateManager.getLastAutoCheckMs()
+      assertTrue(lastAutoCheckAfter403 >= startMs)
+      assertEquals(mockRelease, updateManager.getCachedReleaseInfo())
+      assertTrue(updateManager.getRemainingBackoffMs() > 0L)
+
+      // 15-minute cooldown verification:
+      // After 35 seconds, initial backoff (30s) expires, but 15-minute auto check cooldown is still active
+      val afterBackoffMs = lastAutoCheckAfter403 + 35_000L
+      assertFalse(updateManager.shouldPerformAutomaticCheck(afterBackoffMs))
+
+      // An automatic check during this cooldown window returns cached release without hitting network
+      var connectionAttempted = false
+      updateManager.connectionFactory = {
+        connectionAttempted = true
+        throw IllegalStateException("Network should not be accessed during cooldown")
+      }
+      val cachedResult = updateManager.checkForUpdates(forceRefresh = false)
+      assertTrue(cachedResult.isSuccess)
+      assertEquals(mockRelease, cachedResult.getOrNull())
+      assertFalse(connectionAttempted)
+
+      // After 15 minutes + 1 second, automatic check is permitted again
+      val after15MinutesMs = lastAutoCheckAfter403 + 15 * 60 * 1000L + 1000L
+      assertTrue(updateManager.shouldPerformAutomaticCheck(after15MinutesMs))
+
+      // -------------------------------------------------------------
+      // 2. TEST SUCCESSFUL HTTP 429 FALLBACK
+      // -------------------------------------------------------------
+      updateManager.clearRateLimitAndCache()
+      updateManager.connectionFactory = {
+        createMockHttpConn(
+          code = 429,
+          errorText = """{"message":"Too many requests"}""",
+          headers = mapOf("Retry-After" to "60"),
+        )
+      }
+      updateManager.webFallbackFetcher = { mockRelease }
+
+      val start429Ms = System.currentTimeMillis()
+      val result429 = updateManager.checkForUpdates(forceRefresh = false)
+      assertTrue(result429.isSuccess)
+      assertEquals(mockRelease, result429.getOrNull())
+
+      val lastAutoCheckAfter429 = updateManager.getLastAutoCheckMs()
+      assertTrue(lastAutoCheckAfter429 >= start429Ms)
+      assertEquals(mockRelease, updateManager.getCachedReleaseInfo())
+      // 60-second backoff was parsed from Retry-After header
+      assertTrue(updateManager.getRemainingBackoffMs() > 30_000L)
+      // Cooldown is active
+      assertFalse(updateManager.shouldPerformAutomaticCheck(lastAutoCheckAfter429 + 65_000L))
+
+      // -------------------------------------------------------------
+      // 3. TEST FAILED WEB FALLBACK (returns null / throws)
+      // -------------------------------------------------------------
+      updateManager.clearRateLimitAndCache()
+      updateManager.connectionFactory = {
+        createMockHttpConn(
+          code = 403,
+          errorText = """{"message":"API rate limit exceeded"}""",
+          headers = mapOf("X-RateLimit-Remaining" to "0"),
+        )
+      }
+      // Case 3a: Fallback returns null (e.g. invalid HTML or no APK found)
+      updateManager.webFallbackFetcher = { null }
+      val failedResultNull = updateManager.checkForUpdates(forceRefresh = false)
+      assertTrue(failedResultNull.isFailure)
+      assertTrue(failedResultNull.exceptionOrNull() is com.example.update.RateLimitException)
+      // KEY_LAST_AUTO_CHECK_MS must NOT be updated when fallback fails!
+      assertEquals(0L, updateManager.getLastAutoCheckMs())
+
+      // Case 3b: Fallback throws network exception
+      updateManager.clearRateLimitAndCache()
+      updateManager.connectionFactory = {
+        createMockHttpConn(
+          code = 403,
+          errorText = """{"message":"API rate limit exceeded"}""",
+          headers = mapOf("X-RateLimit-Remaining" to "0"),
+        )
+      }
+      updateManager.webFallbackFetcher = { throw java.io.IOException("Network timeout during web fallback") }
+      val failedResultEx = updateManager.checkForUpdates(forceRefresh = false)
+      assertTrue(failedResultEx.isFailure)
+      assertTrue(failedResultEx.exceptionOrNull() is com.example.update.RateLimitException)
+      // Still NOT updated
+      assertEquals(0L, updateManager.getLastAutoCheckMs())
+
+      // -------------------------------------------------------------
+      // 4. TEST MANUAL UPDATE CHECK DURING RATE-LIMIT BACKOFF WINDOW
+      // -------------------------------------------------------------
+      // Remaining backoff is still active from failure
+      assertTrue(updateManager.getRemainingBackoffMs() > 0L)
+      updateManager.webFallbackFetcher = { mockRelease }
+
+      val manualResult = updateManager.checkForUpdates(forceRefresh = true)
+      assertTrue(manualResult.isSuccess)
+      assertEquals(mockRelease, manualResult.getOrNull())
+      assertTrue(updateManager.getLastAutoCheckMs() > 0L)
+      assertEquals(mockRelease, updateManager.getCachedReleaseInfo())
+
+      updateManager.clearRateLimitAndCache()
+    }
+
+  @Test
   fun testDirectBootSafeInitializationAndUnlockReload() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val userManager = context.getSystemService(Context.USER_SERVICE) as android.os.UserManager
@@ -4364,6 +4521,346 @@ class ExampleRobolectricTest {
       shadowUserManager.setUserUnlocked(true)
     }
   }
+
+  @Test
+  fun testVoiceSettingsTogglesEnforcedAtRuntimeAndPersisted() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
+
+    // Ensure initial clean state
+    prefsRepo.setVoiceInputEnabled(true)
+    prefsRepo.setVoiceAutoPunctuation(true)
+    prefsRepo.setVoiceWaveformAndHaptics(true)
+
+    val serviceController = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = serviceController.get()
+    service.onCreateInputView()
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+    // ---------------------------------------------------------
+    // 1. MASTER VOICE INPUT TOGGLE (voiceInputEnabled)
+    // ---------------------------------------------------------
+    // ON: toggleVoiceTyping should initiate voice typing
+    assertTrue(prefsRepo.config.value.voiceInputEnabled)
+    service.toggleVoiceTyping()
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertTrue(service.isVoiceTypingOpen.value || service.voiceRecognitionManager.uiState.value.state != com.example.voice.VoiceState.IDLE)
+
+    // Close voice typing
+    service.toggleVoiceTyping()
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertFalse(service.isVoiceTypingOpen.value)
+
+    // OFF: Turning master voice input OFF must prevent voice typing from starting
+    prefsRepo.setVoiceInputEnabled(false)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertFalse(prefsRepo.config.value.voiceInputEnabled)
+    assertFalse(service.voiceRecognitionManager.isVoiceInputEnabled)
+
+    service.toggleVoiceTyping()
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertFalse(service.isVoiceTypingOpen.value)
+    assertEquals(com.example.voice.VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+
+    // Calling startListening directly should also be rejected when disabled
+    service.voiceRecognitionManager.startListening(com.example.voice.VoiceLanguage.English)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(com.example.voice.VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+
+    // Restore ON
+    prefsRepo.setVoiceInputEnabled(true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertTrue(service.voiceRecognitionManager.isVoiceInputEnabled)
+
+    // ---------------------------------------------------------
+    // 2. AUDIO WAVEFORM & HAPTICS TOGGLE (voiceWaveformAndHaptics)
+    // ---------------------------------------------------------
+    // OFF: When disabled, waveform scaling must remain strictly 1.0f
+    prefsRepo.setVoiceWaveformAndHaptics(false)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertFalse(prefsRepo.config.value.voiceWaveformAndHaptics)
+    assertFalse(service.voiceRecognitionManager.isWaveformAndHapticsEnabled)
+
+    service.handleVoiceRmsChanged(0.85f)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(1.0f, service.voiceRmsScaleState.value, 0.001f)
+
+    // ON: When enabled, waveform scaling responds to audio RMS changes
+    prefsRepo.setVoiceWaveformAndHaptics(true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertTrue(service.voiceRecognitionManager.isWaveformAndHapticsEnabled)
+
+    service.toggleVoiceTyping() // Starts listening session
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    service.voiceRecognitionManager.activeRecognitionListener?.onReadyForSpeech(android.os.Bundle())
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertTrue(service.isVoiceTypingOpen.value)
+
+    service.handleVoiceRmsChanged(0.85f)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100))
+    assertTrue(service.voiceRmsScaleState.value > 1.0f)
+
+    service.toggleVoiceTyping() // Close voice typing
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals(1.0f, service.voiceRmsScaleState.value, 0.001f)
+
+    // ---------------------------------------------------------
+    // 3. AUTO-PUNCTUATION TOGGLE (voiceAutoPunctuation)
+    // ---------------------------------------------------------
+    var lastRecognized = ""
+    service.voiceRecognitionManager = com.example.voice.VoiceRecognitionManager(
+      context = service,
+      onSpeechRecognized = { lastRecognized = it },
+    )
+    service.voiceRecognitionManager.setLanguage(com.example.voice.VoiceLanguage.English)
+
+    // ON: Question intent gets question mark, statement gets period
+    prefsRepo.setVoiceAutoPunctuation(true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    service.voiceRecognitionManager.updatePreferences(
+      mode = prefsRepo.config.value.voiceRecognitionMode,
+      noiseCancellation = prefsRepo.config.value.voiceNoiseCancellation,
+      voiceEnhancement = prefsRepo.config.value.voiceEnhancement,
+      autoPunctuation = true,
+      waveformAndHaptics = true,
+      voiceInputEnabled = true,
+    )
+    assertTrue(service.voiceRecognitionManager.isAutoPunctuationEnabled)
+
+    service.voiceRecognitionManager.simulateTranscription("What is your name", isFinal = true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("What is your name?", lastRecognized)
+
+    service.voiceRecognitionManager.simulateTranscription("I am coding today", isFinal = true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("I am coding today.", lastRecognized)
+
+    // OFF: Question and statement remain raw without terminal punctuation or commas
+    prefsRepo.setVoiceAutoPunctuation(false)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    service.voiceRecognitionManager.updatePreferences(
+      mode = prefsRepo.config.value.voiceRecognitionMode,
+      noiseCancellation = prefsRepo.config.value.voiceNoiseCancellation,
+      voiceEnhancement = prefsRepo.config.value.voiceEnhancement,
+      autoPunctuation = false,
+      waveformAndHaptics = true,
+      voiceInputEnabled = true,
+    )
+    assertFalse(service.voiceRecognitionManager.isAutoPunctuationEnabled)
+
+    service.voiceRecognitionManager.simulateTranscription("What is your name", isFinal = true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("What is your name", lastRecognized)
+
+    service.voiceRecognitionManager.simulateTranscription("I am coding today", isFinal = true)
+    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+    assertEquals("I am coding today", lastRecognized)
+
+    // ---------------------------------------------------------
+    // 4. PERSISTENCE ACROSS RESTARTS
+    // ---------------------------------------------------------
+    // Save toggles as all false
+    prefsRepo.setVoiceInputEnabled(false)
+    prefsRepo.setVoiceAutoPunctuation(false)
+    prefsRepo.setVoiceWaveformAndHaptics(false)
+
+    // Clear static instance to simulate cold restart
+    val instanceField = KeyboardPreferencesRepository::class.java.getDeclaredField("instance")
+    instanceField.isAccessible = true
+    instanceField.set(null, null)
+
+    val reloadedRepo = KeyboardPreferencesRepository.getInstance(context)
+    assertFalse(reloadedRepo.config.value.voiceInputEnabled)
+    assertFalse(reloadedRepo.config.value.voiceAutoPunctuation)
+    assertFalse(reloadedRepo.config.value.voiceWaveformAndHaptics)
+
+    // Restore all to true and verify persistence again
+    reloadedRepo.setVoiceInputEnabled(true)
+    reloadedRepo.setVoiceAutoPunctuation(true)
+    reloadedRepo.setVoiceWaveformAndHaptics(true)
+
+    instanceField.set(null, null)
+    val restoredRepo = KeyboardPreferencesRepository.getInstance(context)
+    assertTrue(restoredRepo.config.value.voiceInputEnabled)
+    assertTrue(restoredRepo.config.value.voiceAutoPunctuation)
+    assertTrue(restoredRepo.config.value.voiceWaveformAndHaptics)
+
+    serviceController.destroy()
+  }
+
+  @Test
+  fun testPublicGitHubApkDownloadIntegritySignatureAndUpgradeOverV101() =
+    kotlinx.coroutines.runBlocking {
+      val context = ApplicationProvider.getApplicationContext<Context>()
+      val updateManager = com.example.update.GitHubUpdateManager(context)
+      updateManager.clearRateLimitAndCache()
+
+      // 1. Verify public GitHub Release APK asset URL construction & session-gated URL rejection
+      val publicAssetUrl = updateManager.buildPublicGitHubAssetUrl("v1.0.2", "app-release.apk")
+      assertEquals(
+        "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.2/app-release.apk",
+        publicAssetUrl,
+      )
+      assertTrue(updateManager.isDirectPublicDownloadUrl(publicAssetUrl))
+
+      // Session-gated AI Studio URLs and HTML landing pages must be rejected and resolved to public GitHub URL
+      val devUrl = "https://ais-dev-6wiunhvimkfn4mjrnsso7f-775524676365.asia-east1.run.app/app-release.apk"
+      val sharedUrl = "https://ais-pre-6wiunhvimkfn4mjrnsso7f-775524676365.asia-east1.run.app/app-release.apk"
+      val goFilePage = com.example.update.GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL
+      assertFalse(updateManager.isDirectPublicDownloadUrl(devUrl))
+      assertFalse(updateManager.isDirectPublicDownloadUrl(sharedUrl))
+      assertFalse(updateManager.isDirectPublicDownloadUrl(goFilePage))
+      assertEquals(
+        publicAssetUrl,
+        updateManager.resolvePublicApkDownloadUrl(devUrl, "v1.0.2", "app-release.apk"),
+      )
+      assertEquals(
+        publicAssetUrl,
+        updateManager.resolvePublicApkDownloadUrl(sharedUrl, "v1.0.2", "app-release.apk"),
+      )
+
+      // 2. Verify unauthenticated public APK download (302 GitHub redirect -> 200 CDN binary)
+      val minimalValidApkBytes = java.io.ByteArrayOutputStream().use { baos ->
+        java.util.zip.ZipOutputStream(baos).use { zos ->
+          zos.putNextEntry(java.util.zip.ZipEntry("AndroidManifest.xml"))
+          zos.write("<manifest/>".toByteArray())
+          zos.closeEntry()
+          zos.putNextEntry(java.util.zip.ZipEntry("classes.dex"))
+          zos.write(ByteArray(256) { 0x01 })
+          zos.closeEntry()
+        }
+        baos.toByteArray()
+      }
+
+      val cdnUrl = "https://objects.githubusercontent.com/github-production-release-asset/app-release.apk"
+      updateManager.connectionFactory = { url ->
+        when (url.toString()) {
+          publicAssetUrl -> object : java.net.HttpURLConnection(url) {
+            override fun getResponseCode(): Int = 302
+            override fun getHeaderField(name: String?): String? =
+              if (name.equals("Location", ignoreCase = true)) cdnUrl else null
+            override fun connect() {}
+            override fun disconnect() {}
+            override fun usingProxy(): Boolean = false
+          }
+          cdnUrl -> object : java.net.HttpURLConnection(url) {
+            override fun getResponseCode(): Int = 200
+            override fun getContentType(): String = "application/vnd.android.package-archive"
+            override fun getContentLengthLong(): Long = minimalValidApkBytes.size.toLong()
+            override fun getInputStream(): java.io.InputStream =
+              java.io.ByteArrayInputStream(minimalValidApkBytes)
+            override fun connect() {}
+            override fun disconnect() {}
+            override fun usingProxy(): Boolean = false
+          }
+          else -> throw IllegalStateException("Unexpected URL: $url")
+        }
+      }
+
+      var lastPercent = 0
+      val downloadedResult = updateManager.downloadApk(
+        downloadUrl = publicAssetUrl,
+        fileName = "app-release-test.apk",
+        onProgress = { pct, _, _ -> lastPercent = pct },
+      )
+      assertTrue(downloadedResult.isSuccess)
+      val downloadedFile = downloadedResult.getOrThrow()
+      assertEquals(100, lastPercent)
+      assertEquals(minimalValidApkBytes.size.toLong(), downloadedFile.length())
+
+      // 3. Verify rejection of HTML responses (e.g. login/cookie-check page returning 200 text/html)
+      updateManager.connectionFactory = { url ->
+        object : java.net.HttpURLConnection(url) {
+          override fun getResponseCode(): Int = 200
+          override fun getContentType(): String = "text/html; charset=utf-8"
+          override fun getInputStream(): java.io.InputStream =
+            java.io.ByteArrayInputStream("<!DOCTYPE html><html>Please wait...</html>".toByteArray())
+          override fun connect() {}
+          override fun disconnect() {}
+          override fun usingProxy(): Boolean = false
+        }
+      }
+      val htmlDownloadResult = updateManager.downloadApk(
+        downloadUrl = publicAssetUrl,
+        fileName = "corrupt-html.apk",
+        onProgress = { _, _, _ -> },
+      )
+      assertTrue(htmlDownloadResult.isFailure)
+      assertTrue(
+        htmlDownloadResult.exceptionOrNull()?.message.orEmpty().contains("Invalid content type")
+      )
+
+      // 4. Verify real compiled v1.0.2 APK integrity, V2 signing certificate, and upgrade over v1.0.1
+      val realReleaseApk = java.io.File("build/outputs/apk/release/app-release.apk").let {
+        if (it.exists()) it else java.io.File("app/build/outputs/apk/release/app-release.apk")
+      }
+      if (realReleaseApk.exists()) {
+        // Verify binary integrity & exact file size
+        updateManager.verifyDownloadedApkFile(realReleaseApk, realReleaseApk.length())
+
+        // Verify V2 X.509 signing certificate extracted directly from APK Signing Block
+        val certs = com.example.update.ApkSecurityVerifier.extractV2SigningCertificates(realReleaseApk)
+        assertTrue("Expected V2 signing certificate in release APK", certs.isNotEmpty())
+        val actualCertSha256 = com.example.update.ApkSecurityVerifier.computeSha256(certs.first())
+        assertEquals(
+          com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
+          actualCertSha256,
+        )
+
+        // Simulate user settings saved in v1.0.1 before upgrade
+        val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
+        prefsRepo.setActiveLanguageId(LanguageManager.ID_BANGLA_PROBHAT)
+        prefsRepo.setPortraitHeightPercent(122)
+        prefsRepo.setThemePreset(KeyboardThemePreset.OLED_BLACK)
+        prefsRepo.setVoiceAutoPunctuation(true)
+
+        // Verify upgrading from v1.0.1 (installedVersionCode = 2) to v1.0.2 (versionCode = 3)
+        val verifyUpgrade = com.example.update.ApkSecurityVerifier.verifyApk(
+          context = context,
+          apkFile = realReleaseApk,
+          installedVersionCode = 2L,
+        )
+        assertTrue(
+          "Expected APK verification over v1.0.1 to succeed, got $verifyUpgrade",
+          verifyUpgrade is com.example.update.ApkSecurityVerifier.VerificationResult.Success,
+        )
+        val successInfo = verifyUpgrade as com.example.update.ApkSecurityVerifier.VerificationResult.Success
+        assertEquals("com.aistudio.personalkeyboard.kqxwmv", successInfo.verifiedPackageName)
+        assertEquals(3L, successInfo.verifiedVersionCode)
+        assertEquals("1.0.2", successInfo.verifiedVersionName)
+        assertEquals(
+          com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
+          successInfo.certificateSha256,
+        )
+
+        // Confirm all user settings remain intact after upgrade verification
+        assertEquals(LanguageManager.ID_BANGLA_PROBHAT, prefsRepo.config.value.activeLanguageId)
+        assertEquals(122, prefsRepo.config.value.portraitHeightPercent)
+        assertEquals(KeyboardThemePreset.OLED_BLACK, prefsRepo.config.value.themePreset)
+        assertTrue(prefsRepo.config.value.voiceAutoPunctuation)
+      }
+
+      // 5. Verify SettingsViewModel surfaces download & install errors clearly (no silent failures)
+      val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
+      val viewModel = com.example.settings.SettingsViewModel(
+        repository = prefsRepo,
+        updateManager = updateManager,
+      )
+      val missingInstallResult = viewModel.installDownloadedApk(context, "/nonexistent/path/app-release.apk")
+      assertTrue(missingInstallResult.isFailure)
+      assertTrue(viewModel.updateState.value is com.example.update.UpdateUiState.Error)
+      val errState = viewModel.updateState.value as com.example.update.UpdateUiState.Error
+      assertTrue(errState.message.startsWith("Installation failed:"))
+      assertEquals(
+        com.example.update.GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
+        errState.fallbackMirrorUrl,
+      )
+
+      downloadedFile.delete()
+      updateManager.clearRateLimitAndCache()
+    }
 }
+
 
 

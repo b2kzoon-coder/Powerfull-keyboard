@@ -55,5 +55,6 @@ sealed interface UpdateUiState {
     val isRateLimited: Boolean = false,
     val retryAfterMs: Long = 0L,
     val canRetry: Boolean = true,
+    val fallbackMirrorUrl: String? = null,
   ) : UpdateUiState
 }

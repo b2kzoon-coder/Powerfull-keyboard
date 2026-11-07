@@ -31,7 +31,7 @@ data class KeyboardUserConfig(
   val activeLanguageId: String = LanguageManager.ID_ENGLISH,
   val voiceInputEnabled: Boolean = true,
   val voiceBanglishMode: Boolean = false,
-  val voiceAutoPunctuation: Boolean = true,
+  val voiceAutoPunctuation: Boolean = false,
   val voiceWaveformAndHaptics: Boolean = true,
 )
 
@@ -125,7 +125,7 @@ class KeyboardPreferencesRepository private constructor(context: Context) {
           KEY_VOICE_BANGLISH_MODE,
           normalizedLangId == LanguageManager.ID_BANGLISH,
         ),
-      voiceAutoPunctuation = p.getBoolean(KEY_VOICE_AUTO_PUNCTUATION, true),
+      voiceAutoPunctuation = p.getBoolean(KEY_VOICE_AUTO_PUNCTUATION, false),
       voiceWaveformAndHaptics = p.getBoolean(KEY_VOICE_WAVEFORM_AND_HAPTICS, true),
     )
   }
