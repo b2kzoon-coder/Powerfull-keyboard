@@ -1,0 +1,6 @@
+{
+  "name": "Personal Keyboard",
+  "description": "Lightweight, modular native Android Input Method Service (IME) keyboard with customizable layouts, themes, clipboard, and settings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
