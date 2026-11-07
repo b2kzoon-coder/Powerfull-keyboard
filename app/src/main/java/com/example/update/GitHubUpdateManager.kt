@@ -19,7 +19,7 @@ class GitHubUpdateManager(
 
   // Configurable repository target with safe default
   companion object {
-    const val DEFAULT_GITHUB_REPO = "lionhitgo/PersonalKeyboard"
+    const val DEFAULT_GITHUB_REPO = "b2kzoon-coder/Powerfull-keyboard"
     private const val GITHUB_API_URL = "https://api.github.com/repos"
     private const val TIMEOUT_MS = 15000
     private const val UPDATES_DIR = "updates"
