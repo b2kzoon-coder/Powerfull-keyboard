@@ -14,6 +14,7 @@ import com.example.update.ApkInstallerHelper
 import com.example.update.ApkSecurityVerifier
 import com.example.update.GitHubReleaseInfo
 import com.example.update.GitHubUpdateManager
+import com.example.update.RateLimitException
 import com.example.update.UpdateUiState
 import com.example.voice.VoiceRecognitionMode
 import java.io.File
@@ -47,14 +48,38 @@ class SettingsViewModel(
 
   fun checkForUpdates(isAutomatic: Boolean = false) {
     val manager = updateManager ?: return
-    if (_updateState.value is UpdateUiState.Downloading) return
+    if (_updateState.value is UpdateUiState.Checking ||
+      _updateState.value is UpdateUiState.Downloading ||
+      _updateState.value is UpdateUiState.ReadyToInstall
+    ) {
+      return
+    }
     if (isAutomatic && _updateState.value is UpdateUiState.UpdateAvailable) return
+
+    if (isAutomatic && !manager.shouldPerformAutomaticCheck()) {
+      val cached = manager.getCachedReleaseInfo()
+      if (cached != null && manager.isNewerThanCurrent(cached)) {
+        _updateState.value =
+          UpdateUiState.UpdateAvailable(
+            releaseInfo = cached,
+            currentVersionName = BuildConfig.VERSION_NAME,
+            currentVersionCode = BuildConfig.VERSION_CODE,
+          )
+      } else if (_updateState.value is UpdateUiState.Idle) {
+        _updateState.value =
+          UpdateUiState.UpToDate(
+            currentVersionName = BuildConfig.VERSION_NAME,
+            currentVersionCode = BuildConfig.VERSION_CODE,
+          )
+      }
+      return
+    }
 
     checkUpdateJob?.cancel()
     checkUpdateJob =
       viewModelScope.launch {
         _updateState.value = UpdateUiState.Checking
-        val result = manager.checkForUpdates()
+        val result = manager.checkForUpdates(forceRefresh = !isAutomatic)
         result.fold(
           onSuccess = { release ->
             if (release != null && manager.isNewerThanCurrent(release)) {
@@ -73,11 +98,39 @@ class SettingsViewModel(
             }
           },
           onFailure = { error ->
-            _updateState.value =
-              UpdateUiState.Error(
-                message = error.localizedMessage ?: "Failed to check for updates",
-                isNetworkError = true,
-              )
+            if (error is RateLimitException) {
+              val cached = manager.getCachedReleaseInfo()
+              if (cached != null && manager.isNewerThanCurrent(cached)) {
+                _updateState.value =
+                  UpdateUiState.UpdateAvailable(
+                    releaseInfo = cached,
+                    currentVersionName = BuildConfig.VERSION_NAME,
+                    currentVersionCode = BuildConfig.VERSION_CODE,
+                  )
+              } else if (isAutomatic) {
+                _updateState.value =
+                  UpdateUiState.UpToDate(
+                    currentVersionName = BuildConfig.VERSION_NAME,
+                    currentVersionCode = BuildConfig.VERSION_CODE,
+                  )
+              } else {
+                _updateState.value =
+                  UpdateUiState.Error(
+                    message =
+                      error.message
+                        ?: "GitHub API rate limit reached. Please wait a moment and try again.",
+                    isNetworkError = false,
+                    isRateLimited = true,
+                    retryAfterMs = error.retryAfterMs,
+                  )
+              }
+            } else {
+              _updateState.value =
+                UpdateUiState.Error(
+                  message = error.localizedMessage ?: "Failed to check for updates",
+                  isNetworkError = true,
+                )
+            }
           },
         )
       }

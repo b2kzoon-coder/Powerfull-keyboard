@@ -4126,6 +4126,244 @@ class ExampleRobolectricTest {
     )
     assertTrue(viewModel.updateState.value is com.example.update.UpdateUiState.ReadyToInstall)
   }
+
+  @Test
+  fun `github update manager handles rate limit 403 exponential backoff cooldown and web fallback gracefully`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val updateManager = com.example.update.GitHubUpdateManager(context)
+    updateManager.clearRateLimitAndCache()
+
+    // 1. Verify HTTP 403 and 429 rate-limit response detection
+    assertTrue(
+      updateManager.isRateLimitResponse(
+        responseCode = 403,
+        rateLimitRemaining = "0",
+        retryAfterHeader = null,
+        errorBody = """{"message":"API rate limit exceeded for 203.0.113.1."}""",
+      )
+    )
+    assertTrue(
+      updateManager.isRateLimitResponse(
+        responseCode = 403,
+        rateLimitRemaining = null,
+        retryAfterHeader = null,
+        errorBody = """{"message":"You have exceeded a secondary rate limit."}""",
+      )
+    )
+    assertTrue(
+      updateManager.isRateLimitResponse(
+        responseCode = 429,
+        rateLimitRemaining = null,
+        retryAfterHeader = "60",
+        errorBody = "",
+      )
+    )
+    assertFalse(
+      updateManager.isRateLimitResponse(
+        responseCode = 404,
+        rateLimitRemaining = "59",
+        retryAfterHeader = null,
+        errorBody = """{"message":"Not Found"}""",
+      )
+    )
+
+    // 2. Verify exponential backoff progression (30s -> 60s -> 120s -> 240s, capped at 30m)
+    assertEquals(30_000L, updateManager.computeExponentialBackoffMs(0))
+    assertEquals(60_000L, updateManager.computeExponentialBackoffMs(1))
+    assertEquals(120_000L, updateManager.computeExponentialBackoffMs(2))
+    assertEquals(240_000L, updateManager.computeExponentialBackoffMs(3))
+    assertEquals(
+      com.example.update.GitHubUpdateManager.MAX_BACKOFF_MS,
+      updateManager.computeExponentialBackoffMs(10),
+    )
+
+    // 3. Verify Retry-After and X-RateLimit-Reset header parsing
+    val nowMs = (System.currentTimeMillis() / 1000L) * 1000L
+    assertEquals(
+      90_000L,
+      updateManager.parseRateLimitDelayMs(
+        retryAfterHeader = "90",
+        rateLimitResetHeader = null,
+        failureCount = 0,
+        nowMs = nowMs,
+      ),
+    )
+    val resetEpochSec = ((nowMs + 180_000L) / 1000L).toString()
+    assertEquals(
+      180_000L,
+      updateManager.parseRateLimitDelayMs(
+        retryAfterHeader = null,
+        rateLimitResetHeader = resetEpochSec,
+        failureCount = 0,
+        nowMs = nowMs,
+      ),
+    )
+
+    // 4. Verify automatic check cooldown (15 minutes) suppresses repeated automatic checks
+    assertTrue(updateManager.shouldPerformAutomaticCheck(nowMs))
+    val cachedRelease =
+      com.example.update.GitHubReleaseInfo(
+        tagName = "v1.2.0",
+        versionName = "1.2.0",
+        versionCode = 5,
+        releaseNotes = "Cached release notes",
+        apkDownloadUrl = "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.2.0/app-release.apk",
+        apkFileName = "app-release.apk",
+        apkSizeBytes = 31761003L,
+        publishedAt = "2026-11-07T00:00:00Z",
+      )
+    updateManager.recordSuccess(
+      etag = "\"abc123etag\"",
+      lastModified = "Sat, 07 Nov 2026 12:00:00 GMT",
+      releaseInfo = cachedRelease,
+      nowMs = nowMs,
+    )
+    // 1 minute later -> automatic check must be skipped
+    assertFalse(updateManager.shouldPerformAutomaticCheck(nowMs + 60_000L))
+    // 16 minutes later -> automatic check is allowed again
+    assertTrue(updateManager.shouldPerformAutomaticCheck(nowMs + 16 * 60 * 1000L))
+    assertEquals(cachedRelease, updateManager.getCachedReleaseInfo())
+
+    // 5. Verify SettingsViewModel restores cached release during cooldown without network spam
+    val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
+    val viewModel =
+      com.example.settings.SettingsViewModel(
+        repository = prefsRepo,
+        updateManager = updateManager,
+      )
+    viewModel.checkForUpdates(isAutomatic = true)
+    assertTrue(viewModel.updateState.value is com.example.update.UpdateUiState.UpdateAvailable)
+
+    // 6. Verify zero-API-quota web expanded_assets HTML fallback parser
+    val sampleExpandedAssetsHtml =
+      """
+      <div class="Box Box--condensed mt-3">
+        <ul>
+          <li class="Box-row d-flex flex-column flex-md-row">
+            <a href="/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk" rel="nofollow">
+              <span>app-release.apk</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+      """.trimIndent()
+    val webFallbackRelease =
+      updateManager.parseWebExpandedAssetsHtml("v1.0.3", sampleExpandedAssetsHtml)
+    assertNotNull(webFallbackRelease)
+    assertEquals("v1.0.3", webFallbackRelease!!.tagName)
+    assertEquals("1.0.3", webFallbackRelease.versionName)
+    assertEquals(
+      "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk",
+      webFallbackRelease.apkDownloadUrl,
+    )
+    assertTrue(updateManager.isNewerThanCurrent(webFallbackRelease))
+    assertFalse(
+      updateManager.isNewerThanCurrent(
+        webFallbackRelease.copy(
+          tagName = "v1.0.2",
+          versionName = "1.0.2",
+          versionCode = BuildConfig.VERSION_CODE,
+        )
+      )
+    )
+
+    updateManager.clearRateLimitAndCache()
+  }
+
+  @Test
+  fun testDirectBootSafeInitializationAndUnlockReload() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val userManager = context.getSystemService(Context.USER_SERVICE) as android.os.UserManager
+    val shadowUserManager = org.robolectric.Shadows.shadowOf(userManager)
+
+    try {
+      // 1. First prepare persistent credential-protected preferences while unlocked
+      shadowUserManager.setUserUnlocked(true)
+      val directPrefs = context.getSharedPreferences("personal_keyboard_prefs", Context.MODE_PRIVATE)
+      directPrefs.edit()
+        .putString("active_language_id", com.example.language.LanguageManager.ID_BANGLA_PROBHAT)
+        .putInt("portrait_height_percent", 125)
+        .apply()
+
+      val clipPrefs = context.getSharedPreferences("com.example.clipboard_prefs", Context.MODE_PRIVATE)
+      val sampleClipArray = org.json.JSONArray().apply {
+        put(org.json.JSONObject().apply {
+          put("id", 101L)
+          put("text", "DirectBootPersistentClip")
+          put("pinned", true)
+        })
+      }
+      clipPrefs.edit()
+        .putString("entries", sampleClipArray.toString())
+        .putLong("next_id", 102L)
+        .apply()
+
+      // Reset static instances for clean isolation
+      val repoField = KeyboardPreferencesRepository::class.java.getDeclaredField("instance")
+      repoField.isAccessible = true
+      repoField.set(null, null)
+
+      val emojiRepoField = com.example.emoji.EmojiPreferencesRepository::class.java.getDeclaredField("instance")
+      emojiRepoField.isAccessible = true
+      emojiRepoField.set(null, null)
+
+      // 2. Simulate Direct Boot state: device booted, but user NOT yet unlocked
+      shadowUserManager.setUserUnlocked(false)
+      assertFalse(androidx.core.os.UserManagerCompat.isUserUnlocked(context))
+
+      // Verify KeyboardPreferencesRepository initializes without crashing into default config
+      val lockedRepo = KeyboardPreferencesRepository.getInstance(context)
+      assertNotNull(lockedRepo)
+      assertEquals(com.example.language.LanguageManager.ID_ENGLISH, lockedRepo.config.value.activeLanguageId)
+
+      // Verify ClipboardController initializes safely in Direct Boot without throwing
+      val lockedClipboard = com.example.clipboard.ClipboardController(context)
+      assertNotNull(lockedClipboard)
+      assertEquals(emptyList<com.example.clipboard.ClipboardEntry>(), lockedClipboard.entries.value)
+
+      // Verify EmojiPreferencesRepository initializes safely in Direct Boot without throwing
+      val lockedEmojiRepo = com.example.emoji.EmojiPreferencesRepository.getInstance(context)
+      assertNotNull(lockedEmojiRepo)
+      assertTrue(lockedEmojiRepo.recentEmojis.value.isNotEmpty())
+
+      // Verify PersonalKeyboardService initializes during Direct Boot without crash
+      val serviceController = org.robolectric.Robolectric.buildService(PersonalKeyboardService::class.java)
+      serviceController.create()
+      val service = serviceController.get()
+      assertNotNull(service)
+
+      // Service should be in safe default mode (English)
+      assertEquals(com.example.language.LanguageManager.ID_ENGLISH, service.languageManager.activeLanguage.value.id)
+
+      // 3. Simulate first device unlock: user enters PIN/password
+      shadowUserManager.setUserUnlocked(true)
+      assertTrue(androidx.core.os.UserManagerCompat.isUserUnlocked(context))
+
+      // Trigger unlock broadcast or reload
+      context.sendBroadcast(android.content.Intent(android.content.Intent.ACTION_USER_UNLOCKED))
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+      // Verify state was reloaded seamlessly from persistent credential-protected preferences
+      service.unlockAndReloadState()
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+      // Verify preferences reloaded and preserved
+      assertEquals(125, lockedRepo.config.value.portraitHeightPercent)
+      assertEquals(com.example.language.LanguageManager.ID_BANGLA_PROBHAT, lockedRepo.config.value.activeLanguageId)
+      assertEquals(com.example.language.LanguageManager.ID_BANGLA_PROBHAT, service.languageManager.activeLanguage.value.id)
+
+      // Verify clipboard entries restored from credential-protected storage
+      lockedClipboard.reloadIfUnlocked()
+      val restoredClips = lockedClipboard.entries.value
+      assertEquals(1, restoredClips.size)
+      assertEquals("DirectBootPersistentClip", restoredClips[0].text)
+      assertTrue(restoredClips[0].isPinned)
+
+      serviceController.destroy()
+    } finally {
+      shadowUserManager.setUserUnlocked(true)
+    }
+  }
 }
 
 

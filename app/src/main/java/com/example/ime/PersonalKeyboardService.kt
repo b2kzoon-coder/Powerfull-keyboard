@@ -1,10 +1,12 @@
 package com.example.ime
 
 import android.animation.ValueAnimator
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Rect
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
@@ -13,6 +15,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
+import androidx.core.os.UserManagerCompat
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
@@ -282,6 +285,57 @@ class PersonalKeyboardService :
       }
     }
     systemClipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+
+    if (!UserManagerCompat.isUserUnlocked(this)) {
+      registerUserUnlockReceiverIfNeeded()
+    }
+  }
+
+  private var userUnlockReceiver: BroadcastReceiver? = null
+
+  private fun registerUserUnlockReceiverIfNeeded() {
+    if (UserManagerCompat.isUserUnlocked(this)) return
+    if (userUnlockReceiver != null) return
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        if (Intent.ACTION_USER_UNLOCKED == intent?.action) {
+          unregisterUserUnlockReceiver()
+          unlockAndReloadState()
+        }
+      }
+    }
+    userUnlockReceiver = receiver
+    val filter = IntentFilter(Intent.ACTION_USER_UNLOCKED)
+    try {
+      registerReceiver(receiver, filter)
+    } catch (e: Throwable) {
+      Log.w("PersonalKeyboardService", "Failed to register ACTION_USER_UNLOCKED receiver", e)
+    }
+  }
+
+  private fun unregisterUserUnlockReceiver() {
+    userUnlockReceiver?.let {
+      try {
+        unregisterReceiver(it)
+      } catch (_: Throwable) {}
+      userUnlockReceiver = null
+    }
+  }
+
+  fun unlockAndReloadState() {
+    if (!UserManagerCompat.isUserUnlocked(this)) return
+    if (::preferencesRepository.isInitialized) {
+      val prefsReloaded = preferencesRepository.reloadIfUnlocked()
+      if (prefsReloaded) {
+        val savedLangId = preferencesRepository.config.value.activeLanguageId
+        if (languageManager.activeLanguage.value.id != savedLangId) {
+          languageManager.setActiveLanguage(savedLangId)
+        }
+      }
+    }
+    if (::clipboardController.isInitialized) {
+      clipboardController.reloadIfUnlocked()
+    }
   }
 
   private fun createVoiceRecognitionManager(): VoiceRecognitionManager {
@@ -612,6 +666,10 @@ class PersonalKeyboardService :
   override fun onWindowShown() {
     super.onWindowShown()
     isWindowVisible = true
+    if (UserManagerCompat.isUserUnlocked(this)) {
+      unregisterUserUnlockReceiver()
+      unlockAndReloadState()
+    }
     val persistedLangId = preferencesRepository.config.value.activeLanguageId
     if (languageManager.activeLanguage.value.id != persistedLangId) {
       languageManager.setActiveLanguage(persistedLangId)
@@ -712,6 +770,10 @@ class PersonalKeyboardService :
   override fun onStartInputView(editorInfo: EditorInfo?, restarting: Boolean) {
     super.onStartInputView(editorInfo, restarting)
     isWindowVisible = true
+    if (UserManagerCompat.isUserUnlocked(this)) {
+      unregisterUserUnlockReceiver()
+      unlockAndReloadState()
+    }
     if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.CREATED)) {
       lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
@@ -1916,6 +1978,7 @@ class PersonalKeyboardService :
     _smartTranslatorManager?.close()
     serviceScope.cancel()
     _voiceRecognitionManager?.destroy()
+    unregisterUserUnlockReceiver()
     if (::clipboardController.isInitialized) {
       clipboardController.release()
     }

@@ -120,7 +120,6 @@ fun SettingsHomeScreen(
     }
     lifecycleOwner.lifecycle.addObserver(observer)
     viewModel.refreshImeStatus(context)
-    viewModel.checkForUpdates(isAutomatic = true)
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
 

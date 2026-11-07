@@ -2,6 +2,7 @@ package com.example.emoji
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.os.UserManagerCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,10 +14,13 @@ import kotlinx.coroutines.flow.update
  */
 class EmojiPreferencesRepository private constructor(context: Context) {
 
-  private val prefs: SharedPreferences =
-    context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+  private val appContext: Context = context.applicationContext ?: context
+  private var prefs: SharedPreferences? = null
+  @Volatile private var isInitializedFromPrefs = false
 
-  private val _recentEmojis = MutableStateFlow<List<String>>(emptyList())
+  private val _recentEmojis = MutableStateFlow<List<String>>(
+    listOf("❤️", "😊", "👍", "😂", "🔥", "✨", "🇧🇩", "🙏")
+  )
   val recentEmojis: StateFlow<List<String>> = _recentEmojis.asStateFlow()
 
   private val _frequentEmojis = MutableStateFlow<List<String>>(emptyList())
@@ -29,12 +33,47 @@ class EmojiPreferencesRepository private constructor(context: Context) {
   private val frequencyMap = mutableMapOf<String, Int>()
 
   init {
-    loadPreferences()
+    if (UserManagerCompat.isUserUnlocked(appContext)) {
+      initializePrefsLocked()
+    }
   }
 
-  private fun loadPreferences() {
+  private fun initializePrefsLocked(): Boolean {
+    if (isInitializedFromPrefs) return true
+    return try {
+      val p = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      prefs = p
+      isInitializedFromPrefs = true
+      loadPreferencesLocked(p)
+      true
+    } catch (_: Throwable) {
+      false
+    }
+  }
+
+  fun reloadIfUnlocked(): Boolean {
+    if (isInitializedFromPrefs) return true
+    if (!UserManagerCompat.isUserUnlocked(appContext)) return false
+    return synchronized(this) {
+      if (isInitializedFromPrefs) return true
+      initializePrefsLocked()
+    }
+  }
+
+  private fun getPrefs(): SharedPreferences? {
+    if (!isInitializedFromPrefs && UserManagerCompat.isUserUnlocked(appContext)) {
+      synchronized(this) {
+        if (!isInitializedFromPrefs) {
+          initializePrefsLocked()
+        }
+      }
+    }
+    return prefs
+  }
+
+  private fun loadPreferencesLocked(p: SharedPreferences) {
     // 1. Load recent emojis (ordered CSV)
-    val recentRaw = prefs.getString(KEY_RECENT_EMOJIS, null)
+    val recentRaw = p.getString(KEY_RECENT_EMOJIS, null)
     if (!recentRaw.isNullOrEmpty()) {
       _recentEmojis.value = recentRaw.split(DELIMITER).filter { it.isNotEmpty() }.take(MAX_RECENT)
     } else {
@@ -43,7 +82,7 @@ class EmojiPreferencesRepository private constructor(context: Context) {
     }
 
     // 2. Load frequency counts
-    val freqRaw = prefs.getString(KEY_FREQUENT_EMOJIS, null)
+    val freqRaw = p.getString(KEY_FREQUENT_EMOJIS, null)
     if (!freqRaw.isNullOrEmpty()) {
       freqRaw.split(";").forEach { entry ->
         val parts = entry.split("=")
@@ -58,7 +97,7 @@ class EmojiPreferencesRepository private constructor(context: Context) {
     updateFrequentList()
 
     // 3. Load default skin tone
-    val toneName = prefs.getString(KEY_SKIN_TONE, EmojiSkinTone.DEFAULT.name)
+    val toneName = p.getString(KEY_SKIN_TONE, EmojiSkinTone.DEFAULT.name)
     _selectedSkinTone.value =
       EmojiSkinTone.entries.find { it.name == toneName } ?: EmojiSkinTone.DEFAULT
   }
@@ -97,7 +136,7 @@ class EmojiPreferencesRepository private constructor(context: Context) {
   fun setSelectedSkinTone(tone: EmojiSkinTone) {
     if (_selectedSkinTone.value == tone) return
     _selectedSkinTone.value = tone
-    prefs.edit().putString(KEY_SKIN_TONE, tone.name).apply()
+    getPrefs()?.edit()?.putString(KEY_SKIN_TONE, tone.name)?.apply()
   }
 
   @Synchronized
@@ -105,10 +144,10 @@ class EmojiPreferencesRepository private constructor(context: Context) {
     _recentEmojis.value = emptyList()
     frequencyMap.clear()
     _frequentEmojis.value = emptyList()
-    prefs.edit()
-      .remove(KEY_RECENT_EMOJIS)
-      .remove(KEY_FREQUENT_EMOJIS)
-      .apply()
+    getPrefs()?.edit()
+      ?.remove(KEY_RECENT_EMOJIS)
+      ?.remove(KEY_FREQUENT_EMOJIS)
+      ?.apply()
   }
 
   private fun updateFrequentList() {
@@ -123,12 +162,12 @@ class EmojiPreferencesRepository private constructor(context: Context) {
 
   private fun persistRecent(list: List<String>) {
     val raw = list.joinToString(DELIMITER)
-    prefs.edit().putString(KEY_RECENT_EMOJIS, raw).apply()
+    getPrefs()?.edit()?.putString(KEY_RECENT_EMOJIS, raw)?.apply()
   }
 
   private fun persistFrequency() {
     val raw = frequencyMap.entries.joinToString(";") { "${it.key}=${it.value}" }
-    prefs.edit().putString(KEY_FREQUENT_EMOJIS, raw).apply()
+    getPrefs()?.edit()?.putString(KEY_FREQUENT_EMOJIS, raw)?.apply()
   }
 
   companion object {
@@ -144,8 +183,20 @@ class EmojiPreferencesRepository private constructor(context: Context) {
     private var instance: EmojiPreferencesRepository? = null
 
     fun getInstance(context: Context): EmojiPreferencesRepository {
-      return instance ?: synchronized(this) {
-        instance ?: EmojiPreferencesRepository(context).also { instance = it }
+      val appCtx = context.applicationContext ?: context
+      val current = instance
+      if (current != null) {
+        current.reloadIfUnlocked()
+        return current
+      }
+      return synchronized(this) {
+        val existing = instance
+        if (existing != null) {
+          existing.reloadIfUnlocked()
+          existing
+        } else {
+          EmojiPreferencesRepository(appCtx).also { instance = it }
+        }
       }
     }
   }

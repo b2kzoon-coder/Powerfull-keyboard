@@ -2,9 +2,11 @@ package com.example.clipboard
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.Immutable
+import androidx.core.os.UserManagerCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,8 +25,8 @@ class ClipboardController(context: Context) {
   private val systemClipboard =
     appContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
 
-  private val prefs =
-    appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+  private var prefs: SharedPreferences? = null
+  @Volatile private var isInitializedFromPrefs = false
 
   private val lock = Any()
 
@@ -47,16 +49,52 @@ class ClipboardController(context: Context) {
     }
 
   init {
-    synchronized(lock) {
-      val restored = loadFromPrefsLocked()
-      _entries.value = restored
-      syncFromSystemClipboardLocked(isListenerTriggered = false)
+    if (UserManagerCompat.isUserUnlocked(appContext)) {
+      synchronized(lock) {
+        initializePrefsLocked()
+      }
     }
     try {
       systemClipboard?.addPrimaryClipChangedListener(clipChangedListener)
     } catch (e: Throwable) {
       Log.w(TAG, "Failed to register clip listener", e)
     }
+  }
+
+  private fun initializePrefsLocked(): Boolean {
+    if (isInitializedFromPrefs) return true
+    return try {
+      val p = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      prefs = p
+      isInitializedFromPrefs = true
+      val restored = loadFromPrefsLocked(p)
+      _entries.value = restored
+      syncFromSystemClipboardLocked(isListenerTriggered = false)
+      true
+    } catch (t: Throwable) {
+      Log.w(TAG, "Failed to initialize clipboard prefs", t)
+      false
+    }
+  }
+
+  fun reloadIfUnlocked(): Boolean {
+    if (isInitializedFromPrefs) return true
+    if (!UserManagerCompat.isUserUnlocked(appContext)) return false
+    return synchronized(lock) {
+      if (isInitializedFromPrefs) return true
+      initializePrefsLocked()
+    }
+  }
+
+  private fun getPrefs(): SharedPreferences? {
+    if (!isInitializedFromPrefs && UserManagerCompat.isUserUnlocked(appContext)) {
+      synchronized(lock) {
+        if (!isInitializedFromPrefs) {
+          initializePrefsLocked()
+        }
+      }
+    }
+    return prefs
   }
 
   fun syncFromSystemClipboard() {
@@ -211,6 +249,7 @@ class ClipboardController(context: Context) {
   }
 
   private fun saveToPrefsLocked(entries: List<ClipboardEntry>) {
+    val p = getPrefs() ?: return
     try {
       val array = JSONArray()
       for (entry in entries) {
@@ -228,7 +267,7 @@ class ClipboardController(context: Context) {
         obj.put("cnt", tombstone.eventCount)
         tombstoneArray.put(obj)
       }
-      prefs.edit()
+      p.edit()
         .putString(KEY_ENTRIES, array.toString())
         .putString(KEY_TOMBSTONES, tombstoneArray.toString())
         .putLong(KEY_NEXT_ID, nextId)
@@ -238,9 +277,9 @@ class ClipboardController(context: Context) {
     }
   }
 
-  private fun loadFromPrefsLocked(): List<ClipboardEntry> {
+  private fun loadFromPrefsLocked(p: SharedPreferences): List<ClipboardEntry> {
     try {
-      val rawTombstones = prefs.getString(KEY_TOMBSTONES, null)
+      val rawTombstones = p.getString(KEY_TOMBSTONES, null)
       if (!rawTombstones.isNullOrEmpty()) {
         val tombstoneArray = JSONArray(rawTombstones)
         for (i in 0 until tombstoneArray.length()) {
@@ -251,9 +290,9 @@ class ClipboardController(context: Context) {
           tombstones[text] = Tombstone(ts, cnt)
         }
       }
-      nextId = prefs.getLong(KEY_NEXT_ID, 1L)
+      nextId = p.getLong(KEY_NEXT_ID, 1L)
 
-      val rawEntries = prefs.getString(KEY_ENTRIES, null) ?: return emptyList()
+      val rawEntries = p.getString(KEY_ENTRIES, null) ?: return emptyList()
       val array = JSONArray(rawEntries)
       val list = ArrayList<ClipboardEntry>(array.length())
       for (i in 0 until array.length()) {

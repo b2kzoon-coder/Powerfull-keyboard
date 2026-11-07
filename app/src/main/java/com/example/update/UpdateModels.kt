@@ -14,6 +14,12 @@ data class GitHubReleaseInfo(
   val publishedAt: String,
 )
 
+class RateLimitException(
+  val retryAfterMs: Long,
+  message: String =
+    "GitHub API rate limit reached. Please try again in ${(retryAfterMs / 1000L).coerceAtLeast(1L)}s.",
+) : Exception(message)
+
 sealed interface UpdateUiState {
   data object Idle : UpdateUiState
 
@@ -46,6 +52,8 @@ sealed interface UpdateUiState {
   data class Error(
     val message: String,
     val isNetworkError: Boolean = false,
+    val isRateLimited: Boolean = false,
+    val retryAfterMs: Long = 0L,
     val canRetry: Boolean = true,
   ) : UpdateUiState
 }
