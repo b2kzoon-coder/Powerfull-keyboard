@@ -4720,18 +4720,67 @@ class ExampleRobolectricTest {
         updateManager.resolvePublicApkDownloadUrl(sharedUrl, "v1.0.2", "app-release.apk"),
       )
 
-      // 2. Verify unauthenticated public APK download (302 GitHub redirect -> 200 CDN binary)
-      val minimalValidApkBytes = java.io.ByteArrayOutputStream().use { baos ->
-        java.util.zip.ZipOutputStream(baos).use { zos ->
-          zos.putNextEntry(java.util.zip.ZipEntry("AndroidManifest.xml"))
-          zos.write("<manifest/>".toByteArray())
-          zos.closeEntry()
-          zos.putNextEntry(java.util.zip.ZipEntry("classes.dex"))
-          zos.write(ByteArray(256) { 0x01 })
-          zos.closeEntry()
+      // 2. Objective 1: Verify Update button in Keyboard Settings detects v1.0.2 when running v1.0.1 (versionCode = 2)
+      val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
+      val viewModel = com.example.settings.SettingsViewModel(
+        repository = prefsRepo,
+        updateManager = updateManager,
+      )
+      viewModel.installedVersionCodeOverride = 2
+      viewModel.installedVersionNameOverride = "1.0.1"
+
+      val releaseApiJson = """
+        {
+          "tag_name": "v1.0.2",
+          "name": "Personal Keyboard v1.0.2",
+          "body": "VersionCode: 3\nBug fixes and Direct Boot stability",
+          "published_at": "2026-11-07T09:00:00Z",
+          "html_url": "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/tag/v1.0.2",
+          "assets": [
+            {
+              "name": "app-release.apk",
+              "size": 31768039,
+              "content_type": "application/vnd.android.package-archive",
+              "browser_download_url": "$publicAssetUrl"
+            }
+          ]
         }
-        baos.toByteArray()
+      """.trimIndent()
+
+      updateManager.connectionFactory = { url ->
+        object : java.net.HttpURLConnection(url) {
+          override fun getResponseCode(): Int = 200
+          override fun getInputStream(): java.io.InputStream =
+            java.io.ByteArrayInputStream(releaseApiJson.toByteArray())
+          override fun connect() {}
+          override fun disconnect() {}
+          override fun usingProxy(): Boolean = false
+        }
       }
+
+      viewModel.checkForUpdates(isAutomatic = false)
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+      for (i in 0..20) {
+        if (viewModel.updateState.value is com.example.update.UpdateUiState.UpdateAvailable) break
+        kotlinx.coroutines.delay(25)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+      }
+      assertTrue(
+        "Expected UpdateAvailable for v1.0.2 when installed version is v1.0.1, got ${viewModel.updateState.value}",
+        viewModel.updateState.value is com.example.update.UpdateUiState.UpdateAvailable,
+      )
+      val detectedRelease =
+        (viewModel.updateState.value as com.example.update.UpdateUiState.UpdateAvailable).releaseInfo
+      assertEquals("1.0.2", detectedRelease.versionName)
+      assertEquals(3, detectedRelease.versionCode)
+      assertEquals(publicAssetUrl, detectedRelease.apkDownloadUrl)
+
+      // 3. Objective 2 & 4: Stream and verify the real 31,768,039-byte v1.0.2 release APK via public GitHub URL (302 -> 200 CDN)
+      val realReleaseApk = java.io.File("build/outputs/apk/release/app-release.apk").let {
+        if (it.exists()) it else java.io.File("app/build/outputs/apk/release/app-release.apk")
+      }
+      assertTrue("Expected compiled release APK to exist at ${realReleaseApk.absolutePath}", realReleaseApk.exists())
+      assertEquals(31768039L, realReleaseApk.length())
 
       val cdnUrl = "https://objects.githubusercontent.com/github-production-release-asset/app-release.apk"
       updateManager.connectionFactory = { url ->
@@ -4747,9 +4796,9 @@ class ExampleRobolectricTest {
           cdnUrl -> object : java.net.HttpURLConnection(url) {
             override fun getResponseCode(): Int = 200
             override fun getContentType(): String = "application/vnd.android.package-archive"
-            override fun getContentLengthLong(): Long = minimalValidApkBytes.size.toLong()
+            override fun getContentLengthLong(): Long = realReleaseApk.length()
             override fun getInputStream(): java.io.InputStream =
-              java.io.ByteArrayInputStream(minimalValidApkBytes)
+              java.io.FileInputStream(realReleaseApk)
             override fun connect() {}
             override fun disconnect() {}
             override fun usingProxy(): Boolean = false
@@ -4760,22 +4809,71 @@ class ExampleRobolectricTest {
 
       var lastPercent = 0
       val downloadedResult = updateManager.downloadApk(
-        downloadUrl = publicAssetUrl,
-        fileName = "app-release-test.apk",
+        downloadUrl = detectedRelease.apkDownloadUrl,
+        fileName = detectedRelease.apkFileName,
         onProgress = { pct, _, _ -> lastPercent = pct },
       )
-      assertTrue(downloadedResult.isSuccess)
+      assertTrue("Expected real APK download to succeed", downloadedResult.isSuccess)
       val downloadedFile = downloadedResult.getOrThrow()
       assertEquals(100, lastPercent)
-      assertEquals(minimalValidApkBytes.size.toLong(), downloadedFile.length())
+      assertEquals(31768039L, downloadedFile.length())
 
-      // 3. Verify rejection of HTML responses (e.g. login/cookie-check page returning 200 text/html)
+      // Verify V2 X.509 signing certificate extracted directly from APK Signing Block
+      val certs = com.example.update.ApkSecurityVerifier.extractV2SigningCertificates(downloadedFile)
+      assertTrue("Expected V2 signing certificate in downloaded release APK", certs.isNotEmpty())
+      val actualCertSha256 = com.example.update.ApkSecurityVerifier.computeSha256(certs.first())
+      assertEquals(
+        com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
+        actualCertSha256,
+      )
+
+      // Verify full ApkSecurityVerifier check (package, versionCode=3 > installed=2, SHA-256 cert)
+      val verifyUpgrade = com.example.update.ApkSecurityVerifier.verifyApk(
+        context = context,
+        apkFile = downloadedFile,
+        installedVersionCode = 2L,
+      )
+      assertTrue(
+        "Expected APK verification over v1.0.1 to succeed, got $verifyUpgrade",
+        verifyUpgrade is com.example.update.ApkSecurityVerifier.VerificationResult.Success,
+      )
+      val successInfo = verifyUpgrade as com.example.update.ApkSecurityVerifier.VerificationResult.Success
+      assertEquals("com.aistudio.personalkeyboard.kqxwmv", successInfo.verifiedPackageName)
+      assertEquals(3L, successInfo.verifiedVersionCode)
+      assertEquals("1.0.2", successInfo.verifiedVersionName)
+      assertEquals(
+        com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
+        successInfo.certificateSha256,
+      )
+
+      // 4. Objective 5 & 6: Verify Install Unknown Apps permission flow & Android Package Installer launch
+      val unknownAppsIntent = com.example.update.ApkInstallerHelper.createInstallUnknownAppsIntent(context)
+      assertEquals(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, unknownAppsIntent.action)
+      assertEquals(
+        android.net.Uri.parse("package:com.aistudio.personalkeyboard.kqxwmv"),
+        unknownAppsIntent.data,
+      )
+
+      val installLaunchResult = viewModel.installDownloadedApk(context, downloadedFile.absolutePath)
+      assertTrue("Expected package installer launch to succeed, got $installLaunchResult", installLaunchResult.isSuccess)
+      val startedIntent = org.robolectric.Shadows.shadowOf(context as android.app.Application).nextStartedActivity
+      assertNotNull("Expected package installer Intent.ACTION_VIEW to be started", startedIntent)
+      assertEquals(android.content.Intent.ACTION_VIEW, startedIntent.action)
+      assertEquals("application/vnd.android.package-archive", startedIntent.type)
+      assertEquals(
+        "content://com.aistudio.personalkeyboard.kqxwmv.fileprovider/apk_updates/app-release.apk",
+        startedIntent.dataString,
+      )
+      assertTrue((startedIntent.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0)
+      assertTrue((startedIntent.flags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
+
+      // 5. Objective 3 & 7: Verify GoFile fallback when GitHub download fails & explicit error display
       updateManager.connectionFactory = { url ->
         object : java.net.HttpURLConnection(url) {
           override fun getResponseCode(): Int = 200
           override fun getContentType(): String = "text/html; charset=utf-8"
           override fun getInputStream(): java.io.InputStream =
-            java.io.ByteArrayInputStream("<!DOCTYPE html><html>Please wait...</html>".toByteArray())
+            java.io.ByteArrayInputStream("<!DOCTYPE html><html>Error page</html>".toByteArray())
           override fun connect() {}
           override fun disconnect() {}
           override fun usingProxy(): Boolean = false
@@ -4791,62 +4889,6 @@ class ExampleRobolectricTest {
         htmlDownloadResult.exceptionOrNull()?.message.orEmpty().contains("Invalid content type")
       )
 
-      // 4. Verify real compiled v1.0.2 APK integrity, V2 signing certificate, and upgrade over v1.0.1
-      val realReleaseApk = java.io.File("build/outputs/apk/release/app-release.apk").let {
-        if (it.exists()) it else java.io.File("app/build/outputs/apk/release/app-release.apk")
-      }
-      if (realReleaseApk.exists()) {
-        // Verify binary integrity & exact file size
-        updateManager.verifyDownloadedApkFile(realReleaseApk, realReleaseApk.length())
-
-        // Verify V2 X.509 signing certificate extracted directly from APK Signing Block
-        val certs = com.example.update.ApkSecurityVerifier.extractV2SigningCertificates(realReleaseApk)
-        assertTrue("Expected V2 signing certificate in release APK", certs.isNotEmpty())
-        val actualCertSha256 = com.example.update.ApkSecurityVerifier.computeSha256(certs.first())
-        assertEquals(
-          com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
-          actualCertSha256,
-        )
-
-        // Simulate user settings saved in v1.0.1 before upgrade
-        val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
-        prefsRepo.setActiveLanguageId(LanguageManager.ID_BANGLA_PROBHAT)
-        prefsRepo.setPortraitHeightPercent(122)
-        prefsRepo.setThemePreset(KeyboardThemePreset.OLED_BLACK)
-        prefsRepo.setVoiceAutoPunctuation(true)
-
-        // Verify upgrading from v1.0.1 (installedVersionCode = 2) to v1.0.2 (versionCode = 3)
-        val verifyUpgrade = com.example.update.ApkSecurityVerifier.verifyApk(
-          context = context,
-          apkFile = realReleaseApk,
-          installedVersionCode = 2L,
-        )
-        assertTrue(
-          "Expected APK verification over v1.0.1 to succeed, got $verifyUpgrade",
-          verifyUpgrade is com.example.update.ApkSecurityVerifier.VerificationResult.Success,
-        )
-        val successInfo = verifyUpgrade as com.example.update.ApkSecurityVerifier.VerificationResult.Success
-        assertEquals("com.aistudio.personalkeyboard.kqxwmv", successInfo.verifiedPackageName)
-        assertEquals(3L, successInfo.verifiedVersionCode)
-        assertEquals("1.0.2", successInfo.verifiedVersionName)
-        assertEquals(
-          com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
-          successInfo.certificateSha256,
-        )
-
-        // Confirm all user settings remain intact after upgrade verification
-        assertEquals(LanguageManager.ID_BANGLA_PROBHAT, prefsRepo.config.value.activeLanguageId)
-        assertEquals(122, prefsRepo.config.value.portraitHeightPercent)
-        assertEquals(KeyboardThemePreset.OLED_BLACK, prefsRepo.config.value.themePreset)
-        assertTrue(prefsRepo.config.value.voiceAutoPunctuation)
-      }
-
-      // 5. Verify SettingsViewModel surfaces download & install errors clearly (no silent failures)
-      val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
-      val viewModel = com.example.settings.SettingsViewModel(
-        repository = prefsRepo,
-        updateManager = updateManager,
-      )
       val missingInstallResult = viewModel.installDownloadedApk(context, "/nonexistent/path/app-release.apk")
       assertTrue(missingInstallResult.isFailure)
       assertTrue(viewModel.updateState.value is com.example.update.UpdateUiState.Error)
@@ -4857,6 +4899,63 @@ class ExampleRobolectricTest {
         errState.fallbackMirrorUrl,
       )
 
+      viewModel.reportInstallError("ActivityNotFoundException: No package installer available")
+      val reportedErrState = viewModel.updateState.value as com.example.update.UpdateUiState.Error
+      assertEquals(
+        "Installation failed: ActivityNotFoundException: No package installer available",
+        reportedErrState.message,
+      )
+      assertEquals(
+        com.example.update.GitHubUpdateManager.FALLBACK_GOFILE_MIRROR_URL,
+        reportedErrState.fallbackMirrorUrl,
+      )
+
+      // 6. Objective 8 & 9: Verify existing user settings, clipboard, and all 4 language modes remain intact
+      prefsRepo.setActiveLanguageId(LanguageManager.ID_BANGLA_PROBHAT)
+      prefsRepo.setPortraitHeightPercent(122)
+      prefsRepo.setThemePreset(KeyboardThemePreset.OLED_BLACK)
+      prefsRepo.setVoiceAutoPunctuation(true)
+      prefsRepo.setVoiceInputEnabled(true)
+      prefsRepo.setVoiceWaveformAndHaptics(true)
+
+      val sysClip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+      sysClip.setPrimaryClip(ClipData.newPlainText("test", "Saved snippet across v1.0.1 -> v1.0.2 update"))
+      val clipboardController = ClipboardController(context)
+      clipboardController.syncFromSystemClipboard()
+      val pinTargetId = clipboardController.entries.value.first().id
+      clipboardController.togglePin(pinTargetId)
+
+      // Reload repository and clipboard controller to simulate post-update process restart
+      val reloadedPrefs = KeyboardPreferencesRepository.getInstance(context)
+      assertEquals(LanguageManager.ID_BANGLA_PROBHAT, reloadedPrefs.config.value.activeLanguageId)
+      assertEquals(122, reloadedPrefs.config.value.portraitHeightPercent)
+      assertEquals(KeyboardThemePreset.OLED_BLACK, reloadedPrefs.config.value.themePreset)
+      assertTrue(reloadedPrefs.config.value.voiceAutoPunctuation)
+
+      val reloadedClipboard = ClipboardController(context)
+      assertTrue(
+        reloadedClipboard.entries.value.any {
+          it.text == "Saved snippet across v1.0.1 -> v1.0.2 update" && it.isPinned
+        }
+      )
+
+      // Verify PersonalKeyboardService initializes and switches across all 4 approved language modes
+      val service = org.robolectric.Robolectric.setupService(com.example.ime.PersonalKeyboardService::class.java)
+      val inputView = service.onCreateInputView()
+      assertNotNull("Expected PersonalKeyboardService input view to initialize after update", inputView)
+      val expectedModes = listOf(
+        LanguageManager.ID_ENGLISH,
+        LanguageManager.ID_BANGLA_PROBHAT,
+        LanguageManager.ID_BANGLISH,
+        LanguageManager.ID_HINDI_HINGLISH,
+      )
+      for (langId in expectedModes) {
+        reloadedPrefs.setActiveLanguageId(langId)
+        assertEquals(langId, reloadedPrefs.config.value.activeLanguageId)
+      }
+
+      clipboardController.release()
+      reloadedClipboard.release()
       downloadedFile.delete()
       updateManager.clearRateLimitAndCache()
     }

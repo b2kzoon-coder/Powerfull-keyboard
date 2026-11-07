@@ -551,13 +551,16 @@ class GitHubUpdateManager(
     )
   }
 
-  fun isNewerThanCurrent(release: GitHubReleaseInfo): Boolean {
-    val currentCode = BuildConfig.VERSION_CODE
-    if (release.versionCode > currentCode) return true
-    if (release.versionCode < currentCode && release.versionCode > 0) return false
+  fun isNewerThanCurrent(
+    release: GitHubReleaseInfo,
+    installedVersionCode: Int = BuildConfig.VERSION_CODE,
+    installedVersionName: String = BuildConfig.VERSION_NAME,
+  ): Boolean {
+    if (release.versionCode > installedVersionCode) return true
+    if (release.versionCode < installedVersionCode && release.versionCode > 0) return false
 
     // If version codes equal or zero, compare semantic versions (e.g. "1.1" > "1.0.1")
-    return compareSemanticVersions(release.versionName, BuildConfig.VERSION_NAME) > 0
+    return compareSemanticVersions(release.versionName, installedVersionName) > 0
   }
 
   suspend fun downloadApk(

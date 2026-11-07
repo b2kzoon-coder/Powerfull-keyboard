@@ -46,6 +46,15 @@ class SettingsViewModel(
   private var checkUpdateJob: Job? = null
   private var downloadJob: Job? = null
 
+  internal var installedVersionCodeOverride: Int? = null
+  internal var installedVersionNameOverride: String? = null
+
+  private val effectiveInstalledVersionCode: Int
+    get() = installedVersionCodeOverride ?: BuildConfig.VERSION_CODE
+
+  private val effectiveInstalledVersionName: String
+    get() = installedVersionNameOverride ?: BuildConfig.VERSION_NAME
+
   fun checkForUpdates(isAutomatic: Boolean = false) {
     val manager = updateManager ?: return
     if (_updateState.value is UpdateUiState.Checking ||
@@ -56,20 +65,23 @@ class SettingsViewModel(
     }
     if (isAutomatic && _updateState.value is UpdateUiState.UpdateAvailable) return
 
+    val currentCode = effectiveInstalledVersionCode
+    val currentName = effectiveInstalledVersionName
+
     if (isAutomatic && !manager.shouldPerformAutomaticCheck()) {
       val cached = manager.getCachedReleaseInfo()
-      if (cached != null && manager.isNewerThanCurrent(cached)) {
+      if (cached != null && manager.isNewerThanCurrent(cached, currentCode, currentName)) {
         _updateState.value =
           UpdateUiState.UpdateAvailable(
             releaseInfo = cached,
-            currentVersionName = BuildConfig.VERSION_NAME,
-            currentVersionCode = BuildConfig.VERSION_CODE,
+            currentVersionName = currentName,
+            currentVersionCode = currentCode,
           )
       } else if (_updateState.value is UpdateUiState.Idle) {
         _updateState.value =
           UpdateUiState.UpToDate(
-            currentVersionName = BuildConfig.VERSION_NAME,
-            currentVersionCode = BuildConfig.VERSION_CODE,
+            currentVersionName = currentName,
+            currentVersionCode = currentCode,
           )
       }
       return
@@ -82,36 +94,36 @@ class SettingsViewModel(
         val result = manager.checkForUpdates(forceRefresh = !isAutomatic)
         result.fold(
           onSuccess = { release ->
-            if (release != null && manager.isNewerThanCurrent(release)) {
+            if (release != null && manager.isNewerThanCurrent(release, currentCode, currentName)) {
               _updateState.value =
                 UpdateUiState.UpdateAvailable(
                   releaseInfo = release,
-                  currentVersionName = BuildConfig.VERSION_NAME,
-                  currentVersionCode = BuildConfig.VERSION_CODE,
+                  currentVersionName = currentName,
+                  currentVersionCode = currentCode,
                 )
             } else {
               _updateState.value =
                 UpdateUiState.UpToDate(
-                  currentVersionName = BuildConfig.VERSION_NAME,
-                  currentVersionCode = BuildConfig.VERSION_CODE,
+                  currentVersionName = currentName,
+                  currentVersionCode = currentCode,
                 )
             }
           },
           onFailure = { error ->
             if (error is RateLimitException) {
               val cached = manager.getCachedReleaseInfo()
-              if (cached != null && manager.isNewerThanCurrent(cached)) {
+              if (cached != null && manager.isNewerThanCurrent(cached, currentCode, currentName)) {
                 _updateState.value =
                   UpdateUiState.UpdateAvailable(
                     releaseInfo = cached,
-                    currentVersionName = BuildConfig.VERSION_NAME,
-                    currentVersionCode = BuildConfig.VERSION_CODE,
+                    currentVersionName = currentName,
+                    currentVersionCode = currentCode,
                   )
               } else if (isAutomatic) {
                 _updateState.value =
                   UpdateUiState.UpToDate(
-                    currentVersionName = BuildConfig.VERSION_NAME,
-                    currentVersionCode = BuildConfig.VERSION_CODE,
+                    currentVersionName = currentName,
+                    currentVersionCode = currentCode,
                   )
               } else {
                 _updateState.value =
@@ -147,6 +159,7 @@ class SettingsViewModel(
         assetFileName = release.apkFileName,
       )
     val effectiveRelease = release.copy(apkDownloadUrl = resolvedUrl)
+    val installedCode = effectiveInstalledVersionCode.toLong()
 
     downloadJob?.cancel()
     downloadJob =
@@ -177,7 +190,14 @@ class SettingsViewModel(
         downloadResult.fold(
           onSuccess = { apkFile ->
             // Verify APK before allowing installation
-            when (val verifyResult = ApkSecurityVerifier.verifyApk(context, apkFile)) {
+            when (
+              val verifyResult =
+                ApkSecurityVerifier.verifyApk(
+                  context = context,
+                  apkFile = apkFile,
+                  installedVersionCode = installedCode,
+                )
+            ) {
               is ApkSecurityVerifier.VerificationResult.Success -> {
                 _updateState.value =
                   UpdateUiState.ReadyToInstall(
