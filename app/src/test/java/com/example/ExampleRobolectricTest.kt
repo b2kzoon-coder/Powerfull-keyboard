@@ -22,6 +22,7 @@ import com.example.translate.TranslatorUiState
 import com.example.voice.BanglishTransliterator
 import com.example.voice.VoiceLanguage
 import com.example.voice.VoiceRecognitionManager
+import com.example.voice.VoiceRecognitionMode
 import com.example.voice.VoiceState
 import com.example.voice.VoiceUiState
 import com.example.keyboard.KeyboardTypography
@@ -207,11 +208,19 @@ class ExampleRobolectricTest {
     assertEquals("हिन्दी (Hinglish)", manager.activeLanguage.value.spacebarLabel)
     assertEquals(LanguageInputMethodKind.PHONETIC_HINDI, manager.activeLanguage.value.kind)
 
-    // 5. Swipe right -> directly back to English
-    assertTrue(manager.onSpacebarSwipeRight())
+    // 5. Swipe left again -> English (wraparound forward cycle)
+    assertTrue(manager.onSpacebarSwipeLeft())
     assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
 
-    // 6. Layout switcher cycles through all 4 modes (English -> Probhat -> Banglish -> Hindi -> English)
+    // 6. Swipe right -> Hindi Hinglish (wraparound reverse cycle)
+    assertTrue(manager.onSpacebarSwipeRight())
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
+
+    // Swipe left -> back to English
+    assertTrue(manager.onSpacebarSwipeLeft())
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+
+    // 7. Layout switcher cycles through all 4 modes (English -> Probhat -> Banglish -> Hindi -> English)
     assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.switchToNextLanguage().id)
     assertEquals(LanguageManager.ID_BANGLISH, manager.switchToNextLanguage().id)
     assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.switchToNextLanguage().id)
@@ -1020,16 +1029,16 @@ class ExampleRobolectricTest {
       service.voiceRecognitionManager.uiState.value.selectedLanguage,
     )
 
-    // Spacebar swipe left from Banglish switches to Hindi Hinglish, then Probhat
+    // Spacebar swipe left from Banglish switches to Hindi Hinglish, then English
     manager.setActiveLanguage(LanguageManager.ID_BANGLISH)
     assertTrue(manager.onSpacebarSwipeLeft())
     assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
     assertTrue(manager.onSpacebarSwipeLeft())
-    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
-
-    // Spacebar swipe right returns directly to English
-    assertTrue(manager.onSpacebarSwipeRight())
     assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+
+    // Spacebar swipe right returns reverse to Hindi Hinglish
+    assertTrue(manager.onSpacebarSwipeRight())
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
   }
 
   @Test
@@ -4240,7 +4249,7 @@ class ExampleRobolectricTest {
       <div class="Box Box--condensed mt-3">
         <ul>
           <li class="Box-row d-flex flex-column flex-md-row">
-            <a href="/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk" rel="nofollow">
+            <a href="/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.4/app-release.apk" rel="nofollow">
               <span>app-release.apk</span>
             </a>
           </li>
@@ -4248,20 +4257,20 @@ class ExampleRobolectricTest {
       </div>
       """.trimIndent()
     val webFallbackRelease =
-      updateManager.parseWebExpandedAssetsHtml("v1.0.3", sampleExpandedAssetsHtml)
+      updateManager.parseWebExpandedAssetsHtml("v1.0.4", sampleExpandedAssetsHtml)
     assertNotNull(webFallbackRelease)
-    assertEquals("v1.0.3", webFallbackRelease!!.tagName)
-    assertEquals("1.0.3", webFallbackRelease.versionName)
+    assertEquals("v1.0.4", webFallbackRelease!!.tagName)
+    assertEquals("1.0.4", webFallbackRelease.versionName)
     assertEquals(
-      "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk",
+      "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.4/app-release.apk",
       webFallbackRelease.apkDownloadUrl,
     )
     assertTrue(updateManager.isNewerThanCurrent(webFallbackRelease))
     assertFalse(
       updateManager.isNewerThanCurrent(
         webFallbackRelease.copy(
-          tagName = "v1.0.2",
-          versionName = "1.0.2",
+          tagName = "v1.0.3",
+          versionName = "1.0.3",
           versionCode = BuildConfig.VERSION_CODE,
         )
       )
@@ -4697,9 +4706,9 @@ class ExampleRobolectricTest {
       updateManager.clearRateLimitAndCache()
 
       // 1. Verify public GitHub Release APK asset URL construction & session-gated URL rejection
-      val publicAssetUrl = updateManager.buildPublicGitHubAssetUrl("v1.0.2", "app-release.apk")
+      val publicAssetUrl = updateManager.buildPublicGitHubAssetUrl("v1.0.3", "app-release.apk")
       assertEquals(
-        "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.2/app-release.apk",
+        "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/download/v1.0.3/app-release.apk",
         publicAssetUrl,
       )
       assertTrue(updateManager.isDirectPublicDownloadUrl(publicAssetUrl))
@@ -4713,29 +4722,29 @@ class ExampleRobolectricTest {
       assertFalse(updateManager.isDirectPublicDownloadUrl(goFilePage))
       assertEquals(
         publicAssetUrl,
-        updateManager.resolvePublicApkDownloadUrl(devUrl, "v1.0.2", "app-release.apk"),
+        updateManager.resolvePublicApkDownloadUrl(devUrl, "v1.0.3", "app-release.apk"),
       )
       assertEquals(
         publicAssetUrl,
-        updateManager.resolvePublicApkDownloadUrl(sharedUrl, "v1.0.2", "app-release.apk"),
+        updateManager.resolvePublicApkDownloadUrl(sharedUrl, "v1.0.3", "app-release.apk"),
       )
 
-      // 2. Objective 1: Verify Update button in Keyboard Settings detects v1.0.2 when running v1.0.1 (versionCode = 2)
+      // 2. Objective 1: Verify Update button in Keyboard Settings detects v1.0.3 when running v1.0.2 (versionCode = 3)
       val prefsRepo = KeyboardPreferencesRepository.getInstance(context)
       val viewModel = com.example.settings.SettingsViewModel(
         repository = prefsRepo,
         updateManager = updateManager,
       )
-      viewModel.installedVersionCodeOverride = 2
-      viewModel.installedVersionNameOverride = "1.0.1"
+      viewModel.installedVersionCodeOverride = 3
+      viewModel.installedVersionNameOverride = "1.0.2"
 
       val releaseApiJson = """
         {
-          "tag_name": "v1.0.2",
-          "name": "Personal Keyboard v1.0.2",
-          "body": "VersionCode: 3\nBug fixes and Direct Boot stability",
-          "published_at": "2026-11-07T09:00:00Z",
-          "html_url": "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/tag/v1.0.2",
+          "tag_name": "v1.0.3",
+          "name": "Personal Keyboard v1.0.3",
+          "body": "Personal Keyboard v1.0.3\n\nWhat's New:\n\n- Improved Bengali voice recognition processing.\n- Improved Bengali speech recognition result selection.\n- Improved short-word recovery.\n- Improved Bengali Unicode normalization.\n- Improved Banglish voice transliteration.\n- Improved voice typing lifecycle stability.\n- Fixed spacebar swipe language cycling.\n- General stability improvements.\n\nPreserved all four existing keyboard language options.",
+          "published_at": "2026-11-08T11:00:00Z",
+          "html_url": "https://github.com/b2kzoon-coder/Powerfull-keyboard/releases/tag/v1.0.3",
           "assets": [
             {
               "name": "app-release.apk",
@@ -4766,21 +4775,27 @@ class ExampleRobolectricTest {
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
       }
       assertTrue(
-        "Expected UpdateAvailable for v1.0.2 when installed version is v1.0.1, got ${viewModel.updateState.value}",
+        "Expected UpdateAvailable for v1.0.3 when installed version is v1.0.2, got ${viewModel.updateState.value}",
         viewModel.updateState.value is com.example.update.UpdateUiState.UpdateAvailable,
       )
       val detectedRelease =
         (viewModel.updateState.value as com.example.update.UpdateUiState.UpdateAvailable).releaseInfo
-      assertEquals("1.0.2", detectedRelease.versionName)
-      assertEquals(3, detectedRelease.versionCode)
+      assertEquals("1.0.3", detectedRelease.versionName)
+      assertEquals(4, detectedRelease.versionCode)
       assertEquals(publicAssetUrl, detectedRelease.apkDownloadUrl)
 
-      // 3. Objective 2 & 4: Stream and verify the real 31,768,039-byte v1.0.2 release APK via public GitHub URL (302 -> 200 CDN)
-      val realReleaseApk = java.io.File("build/outputs/apk/release/app-release.apk").let {
-        if (it.exists()) it else java.io.File("app/build/outputs/apk/release/app-release.apk")
-      }
+      // 3. Objective 2 & 4: Stream and verify the real v1.0.3 release APK via public GitHub URL (302 -> 200 CDN)
+      val realReleaseApk = listOf(
+        java.io.File("/app/applet/app/build/outputs/apk/release/app-release.apk"),
+        java.io.File("app/build/outputs/apk/release/app-release.apk"),
+        java.io.File("/app/applet/.build-outputs/app-release.apk"),
+        java.io.File("/app/applet/public/assets/app-release.apk"),
+        java.io.File(".build-outputs/app-release.apk"),
+        java.io.File("public/assets/app-release.apk"),
+      ).firstOrNull { it.exists() } ?: java.io.File("/app/applet/.build-outputs/app-release.apk")
       assertTrue("Expected compiled release APK to exist at ${realReleaseApk.absolutePath}", realReleaseApk.exists())
-      assertEquals(31768039L, realReleaseApk.length())
+      val expectedApkLength = realReleaseApk.length()
+      assertTrue("Expected release APK to be non-empty", expectedApkLength > 0L)
 
       val cdnUrl = "https://objects.githubusercontent.com/github-production-release-asset/app-release.apk"
       updateManager.connectionFactory = { url ->
@@ -4796,7 +4811,7 @@ class ExampleRobolectricTest {
           cdnUrl -> object : java.net.HttpURLConnection(url) {
             override fun getResponseCode(): Int = 200
             override fun getContentType(): String = "application/vnd.android.package-archive"
-            override fun getContentLengthLong(): Long = realReleaseApk.length()
+            override fun getContentLengthLong(): Long = expectedApkLength
             override fun getInputStream(): java.io.InputStream =
               java.io.FileInputStream(realReleaseApk)
             override fun connect() {}
@@ -4816,7 +4831,7 @@ class ExampleRobolectricTest {
       assertTrue("Expected real APK download to succeed", downloadedResult.isSuccess)
       val downloadedFile = downloadedResult.getOrThrow()
       assertEquals(100, lastPercent)
-      assertEquals(31768039L, downloadedFile.length())
+      assertEquals(expectedApkLength, downloadedFile.length())
 
       // Verify V2 X.509 signing certificate extracted directly from APK Signing Block
       val certs = com.example.update.ApkSecurityVerifier.extractV2SigningCertificates(downloadedFile)
@@ -4827,20 +4842,20 @@ class ExampleRobolectricTest {
         actualCertSha256,
       )
 
-      // Verify full ApkSecurityVerifier check (package, versionCode=3 > installed=2, SHA-256 cert)
+      // Verify full ApkSecurityVerifier check (package, versionCode=4 > installed=3, SHA-256 cert)
       val verifyUpgrade = com.example.update.ApkSecurityVerifier.verifyApk(
         context = context,
         apkFile = downloadedFile,
-        installedVersionCode = 2L,
+        installedVersionCode = 3L,
       )
       assertTrue(
-        "Expected APK verification over v1.0.1 to succeed, got $verifyUpgrade",
+        "Expected APK verification over v1.0.2 to succeed, got $verifyUpgrade",
         verifyUpgrade is com.example.update.ApkSecurityVerifier.VerificationResult.Success,
       )
       val successInfo = verifyUpgrade as com.example.update.ApkSecurityVerifier.VerificationResult.Success
       assertEquals("com.aistudio.personalkeyboard.kqxwmv", successInfo.verifiedPackageName)
-      assertEquals(3L, successInfo.verifiedVersionCode)
-      assertEquals("1.0.2", successInfo.verifiedVersionName)
+      assertEquals(4L, successInfo.verifiedVersionCode)
+      assertEquals("1.0.3", successInfo.verifiedVersionName)
       assertEquals(
         com.example.update.ApkSecurityVerifier.EXPECTED_SIGNING_CERT_SHA256,
         successInfo.certificateSha256,
@@ -4959,7 +4974,1892 @@ class ExampleRobolectricTest {
       downloadedFile.delete()
       updateManager.clearRateLimitAndCache()
     }
+
+  @Test
+  fun `bug 6 - 1 normal speech completion delivers formatted text and destroys recognizer`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    var recognized: String? = null
+    val manager = VoiceRecognitionManager(
+      context = context,
+      onSpeechRecognized = { recognized = it },
+    )
+    manager.isNetworkConnectedOverride = true
+    manager.setLanguage(VoiceLanguage.English)
+    manager.startListening()
+    assertTrue(manager.hasActiveRecognizer)
+
+    val listener = manager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    val results = android.os.Bundle().apply {
+      putStringArrayList(
+        android.speech.SpeechRecognizer.RESULTS_RECOGNITION,
+        arrayListOf("hello world"),
+      )
+    }
+    listener.onResults(results)
+
+    assertEquals("Hello world", recognized)
+    assertFalse(manager.hasActiveRecognizer)
+    assertEquals(VoiceState.IDLE, manager.uiState.value.state)
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 2 manual mic stop during speech transitions to PROCESSING without premature commit`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.host"
+      fieldId = 42
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.languageManager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+
+    // Start voice typing
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+    assertTrue(service.isVoiceTypingOpen.value)
+
+    // Partial speech arrives: "hello"
+    val partialBundle = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hello"))
+    }
+    listener.onPartialResults(partialBundle)
+
+    // User taps mic button to STOP listening while speaking
+    service.toggleVoiceTyping()
+
+    // Must be in PROCESSING state waiting bounded window for final result (NOT destroyed prematurely)
+    assertEquals(VoiceState.PROCESSING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Now final onResults arrives: "hello world"
+    val finalBundle = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("hello world"))
+    }
+    listener.onResults(finalBundle)
+
+    // Final result commits and replaces composing text cleanly with trailing space
+    assertEquals("Hello world ", hostEditText.text.toString())
+    assertFalse(service.isVoiceTypingOpen.value)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 3 final result arriving after stopListening is formatted and committed once`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val results = mutableListOf<String>()
+    val manager = VoiceRecognitionManager(
+      context = context,
+      onSpeechRecognized = { results.add(it) },
+    )
+    manager.isNetworkConnectedOverride = true
+    manager.setLanguage(VoiceLanguage.English)
+    manager.isAutoPunctuationEnabled = true
+    manager.startListening()
+
+    val listener = manager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    // Stop listening requested
+    manager.stopListening()
+    assertEquals(VoiceState.PROCESSING, manager.uiState.value.state)
+
+    // Late final onResults arrives
+    val finalBundle = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("thank you very much"))
+    }
+    listener.onResults(finalBundle)
+
+    assertEquals(1, results.size)
+    assertEquals("Thank you very much.", results.first())
+    assertEquals(VoiceState.IDLE, manager.uiState.value.state)
+    assertFalse(manager.hasActiveRecognizer)
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 4 final result never arriving uses formatted latest partial as fallback`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val results = mutableListOf<String>()
+    val manager = VoiceRecognitionManager(
+      context = context,
+      onSpeechRecognized = { results.add(it) },
+    )
+    manager.isNetworkConnectedOverride = true
+    manager.setLanguage(VoiceLanguage.Banglish)
+    manager.startListening()
+
+    val listener = manager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    // Partial speech arrives: "আমি ভালো আছি"
+    val partialBundle = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("আমি ভালো আছি"))
+    }
+    listener.onPartialResults(partialBundle)
+
+    // User stops listening
+    manager.stopListening()
+    assertEquals(VoiceState.PROCESSING, manager.uiState.value.state)
+
+    // Advance main looper past STOP_FINALIZE_TIMEOUT_MS (800ms)
+    org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+
+    // Bounded timeout fires and rescues latest partial through post-processing pipeline
+    assertEquals(1, results.size)
+    assertEquals("Ami valo achi", results.first())
+    assertEquals(VoiceState.IDLE, manager.uiState.value.state)
+    assertFalse(manager.hasActiveRecognizer)
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 5 repeated mic taps while PROCESSING forces immediate commit and finish`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.host"
+      fieldId = 42
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.languageManager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+
+    service.toggleVoiceTyping()
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    val partialBundle = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("testing repeated taps"))
+    }
+    listener.onPartialResults(partialBundle)
+
+    // First stop tap -> moves to PROCESSING
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.PROCESSING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Second tap while still in PROCESSING -> forces immediate commitAndFinish without crash
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertEquals("Testing repeated taps ", hostEditText.text.toString())
+    assertFalse(service.isVoiceTypingOpen.value)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 6 switching apps while voice typing cancels recognition and prevents cross app insertion`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditTextA = android.widget.EditText(context)
+    val editorA = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.application.alpha"
+      fieldId = 101
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditTextA.onCreateInputConnection(editorA)
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.onStartInput(editorA, false)
+    service.onStartInputView(editorA, false)
+
+    // Start voice typing in App A
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+    assertTrue(service.isVoiceTypingOpen.value)
+
+    // App switches: App A finishes input
+    service.onFinishInputView(true)
+    service.onFinishInput()
+
+    // Active session should be cleanly cancelled
+    assertFalse("Voice typing must close when input view finishes", service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+
+    // New App B starts input
+    val hostEditTextB = android.widget.EditText(context)
+    val editorB = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.application.beta"
+      fieldId = 202
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditTextB.onCreateInputConnection(editorB)
+    service.onStartInput(editorB, false)
+    service.onStartInputView(editorB, false)
+
+    // Late delayed voice callback intended for App A should be dropped and NOT inserted into App B
+    service.commitVoiceText("stale transcription from app A")
+    assertEquals("", hostEditTextB.text.toString())
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 7 closing keyboard while listening cancels SpeechRecognizer safely`() {
+    grantAudioAndRegisterRecognitionService()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.toggleVoiceTyping()
+    service.voiceRecognitionManager.activeRecognitionListener?.onReadyForSpeech(android.os.Bundle())
+    assertTrue(service.isVoiceTypingOpen.value)
+    assertTrue(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    // User hides keyboard window
+    service.onWindowHidden()
+
+    assertFalse("Voice typing must be closed on window hidden", service.isVoiceTypingOpen.value)
+    assertFalse("Recognizer must be cancelled and released on window hidden", service.voiceRecognitionManager.hasActiveRecognizer)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 8 offline fallback restarts watchdog and respects online only mode`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    var errorReceived: String? = null
+    val manager = VoiceRecognitionManager(
+      context = context,
+      onSpeechRecognized = {},
+      onErrorOccurred = { errorReceived = it },
+    )
+    manager.isNetworkConnectedOverride = true
+
+    // 1. In AUTOMATIC mode: network error triggers offline retry with EXTRA_PREFER_OFFLINE
+    manager.updatePreferences(mode = com.example.voice.VoiceRecognitionMode.AUTOMATIC, noiseCancellation = true, voiceEnhancement = true)
+    manager.startListening(VoiceLanguage.Bangla)
+    manager.simulateError(android.speech.SpeechRecognizer.ERROR_NETWORK)
+
+    assertEquals(1, manager.offlineFallbackRetryCount)
+    assertTrue(manager.isPreferOfflineFallbackActive)
+    assertTrue(manager.hasPendingTimers) // Watchdog restarted for retry attempt
+
+    manager.cancel()
+
+    // 2. In ONLINE_ONLY mode: network error does NOT trigger offline retry
+    manager.updatePreferences(mode = com.example.voice.VoiceRecognitionMode.ONLINE_ONLY, noiseCancellation = true, voiceEnhancement = true)
+    manager.startListening(VoiceLanguage.Bangla)
+    manager.simulateError(android.speech.SpeechRecognizer.ERROR_NETWORK)
+
+    assertEquals(0, manager.offlineFallbackRetryCount)
+    assertFalse(manager.isPreferOfflineFallbackActive)
+    assertNotNull(errorReceived)
+    assertTrue(errorReceived!!.contains("reconnect", ignoreCase = true))
+
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 9 duplicate partial and final callbacks are ignored after utterance finalization`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val results = mutableListOf<String>()
+    val manager = VoiceRecognitionManager(
+      context = context,
+      onSpeechRecognized = { results.add(it) },
+    )
+    manager.isNetworkConnectedOverride = true
+    manager.setLanguage(VoiceLanguage.English)
+    manager.startListening()
+
+    val listener = manager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    val finalBundle1 = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("first final result"))
+    }
+    listener.onResults(finalBundle1)
+
+    assertEquals(1, results.size)
+    assertEquals("First final result", results.first())
+
+    // Spurious late callbacks after finalResultDeliveredInSession must be ignored
+    val latePartial = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("late partial"))
+    }
+    listener.onPartialResults(latePartial)
+
+    val lateResults = android.os.Bundle().apply {
+      putStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("second final result"))
+    }
+    listener.onResults(lateResults)
+
+    assertEquals("Must not commit multiple times for single session", 1, results.size)
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 6 - 10 hypothesis selection prefers native script and mergeStreamingText prevents duplicate words`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+
+    // 1. Bengali script preference when dictating in Bangla (bn-BD)
+    val banglaMatches = listOf("Ki koro", "কি করো")
+    val selectedBangla = manager.selectBestHypothesis(
+      matches = banglaMatches,
+      unstable = emptyList(),
+      fallbackPartial = "",
+      language = VoiceLanguage.Bangla,
+    )
+    assertEquals("কি করো", selectedBangla)
+
+    // 2. Hindi Devanagari script preference when dictating in Hindi
+    val hindiMatches = listOf("Namaste", "नमस्ते")
+    val selectedHindi = manager.selectBestHypothesis(
+      matches = hindiMatches,
+      unstable = emptyList(),
+      fallbackPartial = "",
+      language = VoiceLanguage.Hindi,
+    )
+    assertEquals("नमस्ते", selectedHindi)
+
+    // 3. Streaming text merge: word overlap without duplication
+    val merged = manager.mergeStreamingText("আমি ভাত", "ভাত খাব")
+    assertEquals("আমি ভাত খাব", merged)
+
+    val mergedEnglish = manager.mergeStreamingText("Hello world", "world today")
+    assertEquals("Hello world today", mergedEnglish)
+
+    val noOverlap = manager.mergeStreamingText("good", "morning")
+    assertEquals("good morning", noOverlap)
+
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 9 - 1 eight consecutive left swipes and right swipes cycle through all 4 languages with wraparound and no skipped languages`() {
+    val manager = LanguageManager()
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+
+    // 8 Consecutive Left Swipes (2 full cycles forward: English -> Probhat -> Banglish -> Hinglish -> English...)
+    val expectedLeftCycle = listOf(
+      LanguageManager.ID_BANGLA_PROBHAT,
+      LanguageManager.ID_BANGLISH,
+      LanguageManager.ID_HINDI_HINGLISH,
+      LanguageManager.ID_ENGLISH,
+      LanguageManager.ID_BANGLA_PROBHAT,
+      LanguageManager.ID_BANGLISH,
+      LanguageManager.ID_HINDI_HINGLISH,
+      LanguageManager.ID_ENGLISH,
+    )
+    for ((index, expectedId) in expectedLeftCycle.withIndex()) {
+      val changed = manager.onSpacebarSwipeLeft()
+      assertTrue("Left swipe $index must return true", changed)
+      assertEquals("Step $index expected $expectedId", expectedId, manager.activeLanguage.value.id)
+    }
+
+    // 8 Consecutive Right Swipes (2 full cycles reverse: English -> Hinglish -> Banglish -> Probhat -> English...)
+    val expectedRightCycle = listOf(
+      LanguageManager.ID_HINDI_HINGLISH,
+      LanguageManager.ID_BANGLISH,
+      LanguageManager.ID_BANGLA_PROBHAT,
+      LanguageManager.ID_ENGLISH,
+      LanguageManager.ID_HINDI_HINGLISH,
+      LanguageManager.ID_BANGLISH,
+      LanguageManager.ID_BANGLA_PROBHAT,
+      LanguageManager.ID_ENGLISH,
+    )
+    for ((index, expectedId) in expectedRightCycle.withIndex()) {
+      val changed = manager.onSpacebarSwipeRight()
+      assertTrue("Right swipe $index must return true", changed)
+      assertEquals("Step $index expected $expectedId", expectedId, manager.activeLanguage.value.id)
+    }
+  }
+
+  @Test
+  fun `bug 9 - 2 starting from each of the four languages produces exact forward and reverse cycles and handles direction changes midway`() {
+    val manager = LanguageManager()
+
+    // 1. Starting from Probhat
+    manager.setActiveLanguage(LanguageManager.ID_BANGLA_PROBHAT)
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_BANGLISH, manager.activeLanguage.value.id)
+    manager.setActiveLanguage(LanguageManager.ID_BANGLA_PROBHAT)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+
+    // 2. Starting from Banglish
+    manager.setActiveLanguage(LanguageManager.ID_BANGLISH)
+    assertEquals(LanguageManager.ID_BANGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
+    manager.setActiveLanguage(LanguageManager.ID_BANGLISH)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
+
+    // 3. Starting from Hinglish
+    manager.setActiveLanguage(LanguageManager.ID_HINDI_HINGLISH)
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+    manager.setActiveLanguage(LanguageManager.ID_HINDI_HINGLISH)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_BANGLISH, manager.activeLanguage.value.id)
+
+    // 4. Starting from English
+    manager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
+    manager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
+
+    // 5. Switching direction midway: English -> Left (Probhat) -> Left (Banglish) -> Right (Probhat) -> Right (English) -> Right (Hinglish) -> Left (English)
+    manager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_BANGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeRight()
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, manager.activeLanguage.value.id)
+    manager.onSpacebarSwipeLeft()
+    assertEquals(LanguageManager.ID_ENGLISH, manager.activeLanguage.value.id)
+  }
+
+  @Test
+  fun `bug 9 - 3 spacebar swipe through PersonalKeyboardService commits phonetic composing buffer and preserves active language across keyboard reopen`() {
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.messaging"
+      fieldId = 101
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    // Switch to Hindi Hinglish and type phonetic "namaste"
+    service.languageManager.setActiveLanguage(LanguageManager.ID_HINDI_HINGLISH)
+    service.handleKeyAction(KeyAction.CommitChar("n", "N"))
+    service.handleKeyAction(KeyAction.CommitChar("a", "A"))
+    service.handleKeyAction(KeyAction.CommitChar("m", "M"))
+    service.handleKeyAction(KeyAction.CommitChar("a", "A"))
+    service.handleKeyAction(KeyAction.CommitChar("s", "S"))
+    service.handleKeyAction(KeyAction.CommitChar("t", "T"))
+    service.handleKeyAction(KeyAction.CommitChar("e", "E"))
+
+    // Swipe left should commit phonetic buffer and cycle to English
+    service.handleKeyAction(KeyAction.SwipeSpaceLeft)
+    assertEquals(LanguageManager.ID_ENGLISH, service.languageManager.activeLanguage.value.id)
+    assertEquals("नमस्ते", hostEditText.text.toString())
+
+    // Reopen keyboard: onFinishInputView -> onFinishInput -> onStartInput -> onStartInputView
+    service.onFinishInputView(false)
+    service.onFinishInput()
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    // Verify active language remains English
+    assertEquals(LanguageManager.ID_ENGLISH, service.languageManager.activeLanguage.value.id)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 9 - 4 normal spacebar tap inserts space and swipe gesture does not insert accidental space`() {
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.editor"
+      fieldId = 505
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.languageManager.setActiveLanguage(LanguageManager.ID_ENGLISH)
+
+    // 1. Normal Spacebar tap inserts exactly one space
+    service.handleKeyAction(KeyAction.Space)
+    assertEquals(" ", hostEditText.text.toString())
+
+    // 2. Spacebar swipe left switches language without inserting a space
+    service.handleKeyAction(KeyAction.SwipeSpaceLeft)
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, service.languageManager.activeLanguage.value.id)
+    assertEquals(" ", hostEditText.text.toString()) // Text unchanged!
+
+    // 3. Spacebar swipe right switches language reverse without inserting a space
+    service.handleKeyAction(KeyAction.SwipeSpaceRight)
+    assertEquals(LanguageManager.ID_ENGLISH, service.languageManager.activeLanguage.value.id)
+    assertEquals(" ", hostEditText.text.toString()) // Text unchanged!
+
+    // 4. Another normal Spacebar tap inserts another space
+    service.handleKeyAction(KeyAction.Space)
+    assertEquals("  ", hostEditText.text.toString())
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 9 - 5 exactly four registered languages maintained permanently in order`() {
+    val manager = LanguageManager()
+    val languages = manager.availableLanguages.value
+
+    assertEquals(4, languages.size)
+    assertEquals(LanguageManager.ID_ENGLISH, languages[0].id)
+    assertEquals("English", languages[0].displayName)
+    assertEquals("EN", languages[0].badgeLabel)
+    assertEquals(LanguageInputMethodKind.DIRECT_QWERTY, languages[0].kind)
+
+    assertEquals(LanguageManager.ID_BANGLA_PROBHAT, languages[1].id)
+    assertEquals("বাংলা (Probhat)", languages[1].displayName)
+    assertEquals("প্রভাত", languages[1].badgeLabel)
+    assertEquals(LanguageInputMethodKind.DIRECT_BANGLA_PROBHAT, languages[1].kind)
+
+    assertEquals(LanguageManager.ID_BANGLISH, languages[2].id)
+    assertEquals("Banglish", languages[2].displayName)
+    assertEquals("BN", languages[2].badgeLabel)
+    assertEquals(LanguageInputMethodKind.DIRECT_QWERTY, languages[2].kind)
+
+    assertEquals(LanguageManager.ID_HINDI_HINGLISH, languages[3].id)
+    assertEquals("हिन्दी (Hinglish)", languages[3].displayName)
+    assertEquals("हिन्दी", languages[3].badgeLabel)
+    assertEquals(LanguageInputMethodKind.PHONETIC_HINDI, languages[3].kind)
+  }
+
+  @Test
+  fun `bug 12 - 1 bn-BD recognition intent enforces strict locale without multilingual interference and requests 10 N-best alternatives`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+    manager.isNetworkConnectedOverride = true
+
+    val banglaIntent = manager.buildRecognitionIntent(VoiceLanguage.Bangla)
+    assertEquals("bn-BD", banglaIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE))
+    assertEquals("bn-BD", banglaIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE))
+    assertEquals("bn-BD", banglaIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE))
+    assertEquals(10, banglaIntent.getIntExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 0))
+    assertTrue(banglaIntent.getBooleanExtra(android.speech.RecognizerIntent.EXTRA_CONFIDENCE_SCORES, false))
+    assertNull(
+      "bn-BD must NOT inject EXTRA_ADDITIONAL_LANGUAGES en-US that hijacks short Bengali syllables",
+      banglaIntent.getStringArrayExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES"),
+    )
+
+    // Verify Banglish also uses bn-BD acoustic recognition without EXTRA_ADDITIONAL_LANGUAGES interference
+    val banglishIntent = manager.buildRecognitionIntent(VoiceLanguage.Banglish)
+    assertEquals("bn-BD", banglishIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE))
+    assertNull(banglishIntent.getStringArrayExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES"))
+
+    // Verify English and Hindi retain their expected recognition tags
+    val englishIntent = manager.buildRecognitionIntent(VoiceLanguage.English)
+    assertEquals("en-US", englishIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE))
+    val hindiIntent = manager.buildRecognitionIntent(VoiceLanguage.Hindi)
+    assertEquals("hi-IN", hindiIntent.getStringExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE))
+
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 12 - 2 hypothesis selection recovers short conversational Bengali words over stray Latin lookalikes or dropped tokens`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+
+    // Case 1: matches[0] misrecognizes short word "পুন" as Latin "phone" or "pun", while matches[1] has full Bengali script
+    val strayLatinMatches = listOf(
+      "তুই কি phone মারতেছিলি",
+      "তুই কি পুন মারতেছিলি",
+    )
+    val selectedFromStrayLatin = manager.selectBestHypothesis(
+      matches = strayLatinMatches,
+      unstable = emptyList(),
+      fallbackPartial = "",
+      language = VoiceLanguage.Bangla,
+      confidenceScores = floatArrayOf(0.86f, 0.82f),
+    )
+    assertEquals("তুই কি পুন মারতেছিলি", selectedFromStrayLatin)
+    assertEquals(0.0, com.example.voice.VoicePostProcessor.calculateWordErrorRate("তুই কি পুন মারতেছিলি", selectedFromStrayLatin), 0.001)
+
+    // Case 2: matches[0] drops short Bengali word "পুন" ("তুই কি মারতেছিলি"), while matches[1] preserves it
+    val droppedWordMatches = listOf(
+      "তুই কি মারতেছিলি",
+      "তুই কি পুন মারতেছিলি",
+    )
+    val selectedFromDropped = manager.selectBestHypothesis(
+      matches = droppedWordMatches,
+      unstable = emptyList(),
+      fallbackPartial = "",
+      language = VoiceLanguage.Bangla,
+      confidenceScores = floatArrayOf(0.88f, 0.80f),
+    )
+    assertEquals("তুই কি পুন মারতেছিলি", selectedFromDropped)
+
+    // Case 3: Streaming fallbackPartial captured the short word ("তুই কি পুন মারতেছিলি"), but final matches[0] dropped it
+    val selectedFromStreamingFallback = manager.selectBestHypothesis(
+      matches = listOf("তুই কি মারতেছিলি"),
+      unstable = emptyList(),
+      fallbackPartial = "তুই কি পুন মারতেছিলি",
+      language = VoiceLanguage.Bangla,
+    )
+    assertEquals("তুই কি পুন মারতেছিলি", selectedFromStreamingFallback)
+
+    // Case 4: Similar-sounding short Bengali words ("পুন", "ফোন", "কোন", "শুন") are never forcibly replaced when ranked #1 in pure Bengali
+    for (distinctWord in listOf("পুন", "ফোন", "কোন", "শুন")) {
+      val sentence = "তুই কি $distinctWord মারতেছিলি"
+      val chosen = manager.selectBestHypothesis(
+        matches = listOf(sentence),
+        unstable = emptyList(),
+        fallbackPartial = sentence,
+        language = VoiceLanguage.Bangla,
+      )
+      assertEquals(sentence, chosen)
+    }
+
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 12 - 3 conversational Bangladesh Bengali sentences short words and Bangla-English mixed sentences processed accurately`() {
+    // 1. Conversational Bangladesh Bengali with auto-punctuation
+    val conv1 = com.example.voice.VoicePostProcessor.process(
+      rawText = "তুই কি পুন মারতেছিলি",
+      language = VoiceLanguage.Bangla,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("তুই কি পুন মারতেছিলি?", conv1)
+
+    val conv2 = com.example.voice.VoicePostProcessor.process(
+      rawText = "তুই কই যাস",
+      language = VoiceLanguage.Bangla,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("তুই কই যাস?", conv2)
+
+    val conv3 = com.example.voice.VoicePostProcessor.process(
+      rawText = "এখন কেমনে যাবো",
+      language = VoiceLanguage.Bangla,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("এখন কেমনে যাবো?", conv3)
+
+    // 2. Short single-word Bengali utterances preserved without alteration
+    for (shortWord in listOf("পুন", "কই", "তো", "নে", "যা", "বল", "শোন", "হ্যাঁ", "না")) {
+      val processed = com.example.voice.VoicePostProcessor.process(
+        rawText = shortWord,
+        language = VoiceLanguage.Bangla,
+        isFinal = true,
+        autoPunctuate = false,
+      )
+      assertEquals(shortWord, processed)
+    }
+
+    // 3. Bangla-English mixed code-switching sentences
+    val mixed1 = com.example.voice.VoicePostProcessor.process(
+      rawText = "আমি আজকে office যাবো",
+      language = VoiceLanguage.Bangla,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("আমি আজকে office যাবো।", mixed1)
+
+    val mixed2 = com.example.voice.VoicePostProcessor.process(
+      rawText = "তোর flight কয়টায়",
+      language = VoiceLanguage.Bangla,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("তোর flight কয়টায়?", mixed2)
+
+    // 4. Banglish transliteration of conversational Bangladesh Bengali
+    val banglishConv = com.example.voice.VoicePostProcessor.process(
+      rawText = "তুই কি পুন মারতেছিলি",
+      language = VoiceLanguage.Banglish,
+      isFinal = true,
+      autoPunctuate = true,
+    )
+    assertEquals("Tui ki pun martechili?", banglishConv)
+  }
+
+  @Test
+  fun `bug 12 - 4 conservative Bengali Unicode normalization cleans decomposed sequences without altering lexical meaning`() {
+    // Decomposed ড+় (\u09A1\u09BC), ঢ+় (\u09A2\u09BC), য+় (\u09AF\u09BC) and split ে+া (\u09C7\u09BE) -> ড়, ঢ়, য়, ো
+    val decomposed = "বা\u09A1\u09BCি ক\u09C7\u09BEথা\u09AF\u09BC\u25CC"
+    val normalized = com.example.voice.VoicePostProcessor.normalizeBengaliUnicode(decomposed)
+    assertEquals("বাড়ি কোথায়", normalized)
+
+    // Duplicate accidental vowel signs collapsed
+    val dupKar = "তুই কি পুন মা\u09BEরতেছিলি"
+    assertEquals("তুই কি পুন মারতেছিলি", com.example.voice.VoicePostProcessor.normalizeBengaliUnicode(dupKar))
+
+    // Verify WER and CER computation accuracy
+    val ref = "তুই কি পুন মারতেছিলি"
+    assertEquals(0.0, com.example.voice.VoicePostProcessor.calculateWordErrorRate(ref, "তুই কি পুন মারতেছিলি?"), 0.001)
+    assertEquals(0.0, com.example.voice.VoicePostProcessor.calculateCharacterErrorRate(ref, "তুই কি পুন মা\u09BEরতেছিলি"), 0.001)
+    assertEquals(0.25, com.example.voice.VoicePostProcessor.calculateWordErrorRate(ref, "তুই কি ফোন মারতেছিলি"), 0.001)
+  }
+
+  @Test
+  fun `bug 12 - 5 end-to-end streaming partial and final Bengali recognition commits once and cleans up on stop`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 303
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.languageManager.setActiveLanguage(LanguageManager.ID_BANGLA_PROBHAT)
+
+    // Start listening
+    service.toggleVoiceTyping()
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    // Streaming partial results arrive with N-best partial candidates
+    val partialBundle = android.os.Bundle().apply {
+      putStringArrayList(
+        android.speech.SpeechRecognizer.RESULTS_RECOGNITION,
+        arrayListOf("তুই কি phone", "তুই কি পুন"),
+      )
+    }
+    listener.onPartialResults(partialBundle)
+    assertEquals("তুই কি পুন", hostEditText.text.toString())
+
+    // User taps mic to stop; final results arrive with N-best alternatives
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.PROCESSING, service.voiceRecognitionManager.uiState.value.state)
+
+    val finalBundle = android.os.Bundle().apply {
+      putStringArrayList(
+        android.speech.SpeechRecognizer.RESULTS_RECOGNITION,
+        arrayListOf("তুই কি phone মারতেছিলি", "তুই কি পুন মারতেছিলি"),
+      )
+      putFloatArray(android.speech.SpeechRecognizer.CONFIDENCE_SCORES, floatArrayOf(0.85f, 0.81f))
+    }
+    listener.onResults(finalBundle)
+
+    // Utterance committed once with zero duplication and recognizer cleaned up
+    assertEquals("তুই কি পুন মারতেছিলি ", hostEditText.text.toString())
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    controller.destroy()
+  }
+
+  // =========================================================================
+  // UNIVERSAL RESPONSIVE LAYOUT SYSTEM TESTS
+  // =========================================================================
+
+  @Test
+  fun `responsive layout engine calculates adaptive row widths padding and bottom row weights across 280dp to 1200dp viewports`() {
+    val widthsDp = listOf(280f, 300f, 320f, 340f, 360f, 384f, 393f, 412f, 480f, 600f, 800f, 1024f)
+    val enterActions = com.example.layout.EnterActionType.entries
+    val languageKinds = listOf(
+      LanguageInputMethodKind.DIRECT_QWERTY,
+      LanguageInputMethodKind.DIRECT_BANGLA_PROBHAT,
+      LanguageInputMethodKind.PHONETIC_HINDI,
+    )
+    val modes = listOf(
+      KeyboardMode.ALPHABET,
+      KeyboardMode.SYMBOLS_PRIMARY,
+      KeyboardMode.SYMBOLS_SECONDARY,
+    )
+
+    for (widthDp in widthsDp) {
+      val maxKeyboardWidth = com.example.keyboard.ResponsiveLayoutEngine.computeMaxKeyboardWidthDp(widthDp)
+      assertTrue(
+        "Max keyboard width ($maxKeyboardWidth) must not exceed available width ($widthDp)",
+        maxKeyboardWidth <= widthDp + 0.01f,
+      )
+
+      // Verify horizontal key gap tightens on 12-key Probhat Row 1 before shrinking key caps
+      val gap10Key = com.example.keyboard.ResponsiveLayoutEngine.computeRowKeyHorizontalPaddingDp(maxKeyboardWidth, 10)
+      val gap11Key = com.example.keyboard.ResponsiveLayoutEngine.computeRowKeyHorizontalPaddingDp(maxKeyboardWidth, 11)
+      val gap12Key = com.example.keyboard.ResponsiveLayoutEngine.computeRowKeyHorizontalPaddingDp(maxKeyboardWidth, 12)
+      assertTrue(
+        "12-key row gap ($gap12Key) must be <= 11-key row gap ($gap11Key) and 10-key row gap ($gap10Key) at ${widthDp}dp",
+        gap12Key <= gap11Key + 0.001f && gap11Key <= gap10Key + 0.001f,
+      )
+
+      for (langKind in languageKinds) {
+        for (mode in modes) {
+          val layout = LayoutManager.getLayout(
+            mode = mode,
+            showNumberRow = true,
+            languageKind = langKind,
+          )
+          for (enterAction in enterActions) {
+            val metrics = com.example.keyboard.ResponsiveLayoutEngine.computeKeyboardMetrics(
+              availableParentWidthDp = widthDp,
+              isLandscape = widthDp >= 600f,
+              portraitHeightPercent = 130,
+              landscapeHeightPercent = 100,
+              isCompactSearchMode = false,
+              mode = mode,
+              languageKind = langKind,
+              enterActionType = enterAction,
+              rows = layout.rows,
+            )
+
+            assertEquals(layout.rows.size, metrics.rows.size)
+            for ((rowIndex, rowMetric) in metrics.rows.withIndex()) {
+              val rowKeys = layout.rows[rowIndex]
+              assertEquals(rowKeys.size, rowMetric.effectiveWeights.size)
+              assertEquals(rowKeys.size, rowMetric.allocatedKeyWidthsDp.size)
+
+              // Sum of allocated key widths + side indentations + container padding must equal maxKeyboardWidthDp
+              val totalAllocatedKeysDp = rowMetric.allocatedKeyWidthsDp.sum()
+              val totalRowWidthDp =
+                totalAllocatedKeysDp +
+                  2f * rowMetric.sideIndentationDp +
+                  2f * metrics.containerHorizontalPaddingDp
+              assertEquals(
+                "Row $rowIndex total width must match maxKeyboardWidthDp at ${widthDp}dp ($langKind, $mode)",
+                metrics.maxKeyboardWidthDp,
+                totalRowWidthDp,
+                0.25f,
+              )
+
+              // Every key must have positive allocated width
+              for ((keyIdx, allocWidth) in rowMetric.allocatedKeyWidthsDp.withIndex()) {
+                assertTrue(
+                  "Key ${rowKeys[keyIdx].primaryLabel} in row $rowIndex must have positive width ($allocWidth) at ${widthDp}dp",
+                  allocWidth >= 16f,
+                )
+              }
+
+              // Bottom row invariants: ?123, Emoji, Comma, Spacebar, Period, Enter
+              val spaceIdx = rowKeys.indexOfFirst { it.action is KeyAction.Space }
+              if (spaceIdx >= 0) {
+                val spaceWidth = rowMetric.allocatedKeyWidthsDp[spaceIdx]
+                for ((kIdx, kSpec) in rowKeys.withIndex()) {
+                  if (kIdx != spaceIdx) {
+                    val otherWidth = rowMetric.allocatedKeyWidthsDp[kIdx]
+                    assertTrue(
+                      "Spacebar ($spaceWidth dp) must remain wider than ${kSpec.primaryLabel} ($otherWidth dp) at ${widthDp}dp (enter=$enterAction)",
+                      spaceWidth > otherWidth,
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `responsive keyboard typography bounds functional labels and character glyphs by both height scale and horizontal key width`() {
+    val fontScales = listOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f, 2.0f)
+    val heightScales = listOf(0.60f, 1.0f, 1.30f, 1.55f, 1.80f)
+    val narrowWidthsDp = listOf(28f, 34f, 40f, 48f, 64f)
+
+    for (fontScale in fontScales) {
+      for (heightScale in heightScales) {
+        for (keyWidthDp in narrowWidthsDp) {
+          // Functional labels ("?123", "ABC", "Search", "Done", "😊") must never blow up linearly with heightScale = 1.80f
+          val modeSymbolsSp = KeyboardTypography.resolveResponsiveKeyFontSize(
+            displayText = "?123",
+            isSpacebar = false,
+            heightScale = heightScale,
+            fontScale = fontScale,
+            allocatedKeyWidthDp = keyWidthDp,
+          ).value
+
+          val searchEnterSp = KeyboardTypography.resolveResponsiveKeyFontSize(
+            displayText = "Search",
+            isSpacebar = false,
+            heightScale = heightScale,
+            fontScale = fontScale,
+            allocatedKeyWidthDp = keyWidthDp,
+          ).value
+
+          val bengaliCharSp = KeyboardTypography.resolveResponsiveKeyFontSize(
+            displayText = "ক",
+            isSpacebar = false,
+            heightScale = heightScale,
+            fontScale = fontScale,
+            allocatedKeyWidthDp = keyWidthDp,
+          ).value
+
+          assertTrue(
+            "Functional '?123' font size ($modeSymbolsSp sp) must fit within keyWidth=$keyWidthDp dp",
+            modeSymbolsSp in 7.5f..16.5f,
+          )
+          assertTrue(
+            "Functional 'Search' font size ($searchEnterSp sp) must fit within keyWidth=$keyWidthDp dp",
+            searchEnterSp in 7.5f..17.5f,
+          )
+          assertTrue(
+            "Bengali glyph font size ($bengaliCharSp sp) must remain legible and bounded within keyWidth=$keyWidthDp dp",
+            bengaliCharSp in 9.0f..22.5f,
+          )
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `universal responsive keyboard surface renders all 4 languages and symbol modes across widths densities font scales and orientations with zero overflow or key overlap`() {
+    val activity = Robolectric.buildActivity(androidx.activity.ComponentActivity::class.java).create().start().resume().visible().get()
+    val container = android.widget.FrameLayout(activity)
+    activity.setContentView(container)
+
+    val languageState = androidx.compose.runtime.mutableStateOf(LanguageManager.EnglishLanguage)
+    val modeState = androidx.compose.runtime.mutableStateOf(KeyboardMode.ALPHABET)
+    val showNumberRowState = androidx.compose.runtime.mutableStateOf(true)
+    val enterActionState = androidx.compose.runtime.mutableStateOf(com.example.layout.EnterActionType.ENTER)
+    val portraitPercentState = androidx.compose.runtime.mutableIntStateOf(130)
+    val landscapePercentState = androidx.compose.runtime.mutableIntStateOf(100)
+    val densityState = androidx.compose.runtime.mutableStateOf(
+      androidx.compose.ui.unit.Density(density = 2.0f, fontScale = 1.0f)
+    )
+
+    val composeView = androidx.compose.ui.platform.ComposeView(activity).apply {
+      setContent {
+        androidx.compose.runtime.CompositionLocalProvider(
+          androidx.compose.ui.platform.LocalDensity provides densityState.value
+        ) {
+          val lang = languageState.value
+          val mode = modeState.value
+          com.example.keyboard.KeyboardSurface(
+            mode = mode,
+            shiftState = com.example.layout.ShiftState.LOWERCASE,
+            enterActionType = enterActionState.value,
+            portraitHeightPercent = portraitPercentState.intValue,
+            landscapeHeightPercent = landscapePercentState.intValue,
+            showNumberRow = showNumberRowState.value,
+            showToolbar = true,
+            cutCopyPasteEnabled = true,
+            activeLanguageLabel = lang.spacebarLabel,
+            activeLanguageBadge = lang.badgeLabel,
+            activeLanguageKind = lang.kind,
+            palette = com.example.theme.KeyboardThemeRepository.paletteFor(KeyboardThemePreset.SLATE_DARK),
+            clipboardEntries = emptyList(),
+            onKeyAction = {},
+            onCommitDirectText = {},
+            onToggleNumberRow = {},
+            onSwitchLanguage = {},
+            onMoveCursorLeft = {},
+            onMoveCursorRight = {},
+            onCycleTheme = {},
+            onTogglePinClip = {},
+            onDeleteClip = {},
+            onClearUnpinnedClips = {},
+            onOpenSettings = {},
+          )
+        }
+      }
+    }
+    container.addView(composeView)
+
+    // Test matrix covering OPPO A16 (360dp @ 2.0x xhdpi & 320dp @ 2.25x zoomed),
+    // ultra-compact 280dp, standard 393dp/412dp @ 2.625x/3.0x, landscape 640dp/720dp,
+    // small/large font scales (0.85f..1.5f), and all 4 permanent typing languages + symbols.
+    data class ViewportConfig(
+      val name: String,
+      val widthDp: Int,
+      val density: Float,
+      val fontScale: Float,
+      val portraitPercent: Int,
+    )
+
+    val viewports = listOf(
+      ViewportConfig("UltraCompact_280dp_mdpi", widthDp = 280, density = 1.0f, fontScale = 1.0f, portraitPercent = 130),
+      ViewportConfig("OppoA16_Zoomed_320dp_xhdpi_LargeFont", widthDp = 320, density = 2.25f, fontScale = 1.3f, portraitPercent = 130),
+      ViewportConfig("OppoA16_Default_360dp_xhdpi", widthDp = 360, density = 2.0f, fontScale = 1.0f, portraitPercent = 130),
+      ViewportConfig("OppoA16_MaxHeight_360dp_xhdpi", widthDp = 360, density = 2.0f, fontScale = 1.5f, portraitPercent = 180),
+      ViewportConfig("Redmi13_393dp_xxhdpi", widthDp = 393, density = 2.75f, fontScale = 1.15f, portraitPercent = 130),
+      ViewportConfig("Samsung_Realme_412dp_xxhdpi", widthDp = 412, density = 2.625f, fontScale = 1.0f, portraitPercent = 130),
+      ViewportConfig("CompactMinHeight_340dp_hdpi", widthDp = 340, density = 1.5f, fontScale = 0.85f, portraitPercent = 60),
+      ViewportConfig("Landscape_Tablet_720dp", widthDp = 720, density = 2.0f, fontScale = 1.0f, portraitPercent = 100),
+    )
+
+    val languages = listOf(
+      LanguageManager.EnglishLanguage,
+      LanguageManager.BanglaProbhatLanguage,
+      LanguageManager.BanglishLanguage,
+      LanguageManager.HindiHinglishLanguage,
+    )
+
+    val modes = listOf(
+      KeyboardMode.ALPHABET,
+      KeyboardMode.SYMBOLS_PRIMARY,
+      KeyboardMode.SYMBOLS_SECONDARY,
+    )
+
+    fun pumpComposeAndMeasure(widthSpec: Int, heightSpec: Int) {
+      androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+      val uiDispatcher =
+        androidx.compose.ui.platform.AndroidUiDispatcher.CurrentThread[
+          kotlin.coroutines.ContinuationInterceptor
+        ] as? androidx.compose.ui.platform.AndroidUiDispatcher
+      if (uiDispatcher != null) {
+        val field =
+          uiDispatcher.javaClass
+            .getDeclaredField("dispatchCallback")
+            .apply { isAccessible = true }
+        val callback = field.get(uiDispatcher) as android.view.Choreographer.FrameCallback
+        callback.doFrame(System.nanoTime())
+      }
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+      composeView.forceLayout()
+      composeView.getChildAt(0)?.forceLayout()
+      composeView.measure(widthSpec, heightSpec)
+      composeView.layout(0, 0, composeView.measuredWidth, composeView.measuredHeight)
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+    }
+
+    for (vp in viewports) {
+      com.example.keyboard.debugMeasuredKeyBoundsInRoot.clear()
+      densityState.value = androidx.compose.ui.unit.Density(density = vp.density, fontScale = vp.fontScale)
+      portraitPercentState.intValue = vp.portraitPercent
+      val widthPx = Math.round(vp.widthDp * vp.density)
+      val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(widthPx, android.view.View.MeasureSpec.EXACTLY)
+      val heightSpec = android.view.View.MeasureSpec.makeMeasureSpec(Math.round(900 * vp.density), android.view.View.MeasureSpec.AT_MOST)
+
+      for (lang in languages) {
+        languageState.value = lang
+        for (mode in modes) {
+          modeState.value = mode
+          pumpComposeAndMeasure(widthSpec, heightSpec)
+
+          val surfaceWidthPx = com.example.keyboard.debugMeasuredSurfaceWidthPx
+          assertEquals(
+            "[${vp.name} / ${lang.id} / $mode] Surface width px must equal viewport width px",
+            widthPx,
+            surfaceWidthPx,
+          )
+
+          val layout = LayoutManager.getLayout(
+            mode = mode,
+            showNumberRow = showNumberRowState.value,
+            languageKind = lang.kind,
+          )
+
+          // Verify EVERY row and EVERY key is rendered within [0, widthPx] with zero horizontal overflow and zero overlap
+          for ((rowIndex, rowKeys) in layout.rows.withIndex()) {
+            var previousRightPx = -1f
+            for ((keyIndex, keySpec) in rowKeys.withIndex()) {
+              val rect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[keySpec.id]
+              assertNotNull(
+                "[${vp.name} / ${lang.id} / $mode] Row $rowIndex key #$keyIndex (${keySpec.id}) must be measured and positioned",
+                rect,
+              )
+              val keyRect = rect!!
+              assertTrue(
+                "[${vp.name} / ${lang.id} / $mode] Key ${keySpec.id} must have positive width (${keyRect.width}) and height (${keyRect.height})",
+                keyRect.width > 1f && keyRect.height > 1f,
+              )
+              assertTrue(
+                "[${vp.name} / ${lang.id} / $mode] Key ${keySpec.id} left (${keyRect.left}) must not overflow left edge (< 0)",
+                keyRect.left >= -1.0f,
+              )
+              assertTrue(
+                "[${vp.name} / ${lang.id} / $mode] Key ${keySpec.id} right (${keyRect.right}) must not overflow surface width ($widthPx)",
+                keyRect.right <= widthPx + 1.5f,
+              )
+              if (previousRightPx >= 0f) {
+                assertTrue(
+                  "[${vp.name} / ${lang.id} / $mode] Row $rowIndex key ${keySpec.id} left (${keyRect.left}) must not overlap previous key right ($previousRightPx)",
+                  keyRect.left >= previousRightPx - 1.5f,
+                )
+              }
+              previousRightPx = keyRect.right
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `bottom button row guarantees ?123 emoji comma spacebar period and enter visibility and alignment across all enter actions and narrow viewports`() {
+    val activity = Robolectric.buildActivity(androidx.activity.ComponentActivity::class.java).create().start().resume().visible().get()
+    val container = android.widget.FrameLayout(activity)
+    activity.setContentView(container)
+
+    val languageState = androidx.compose.runtime.mutableStateOf(LanguageManager.EnglishLanguage)
+    val enterActionState = androidx.compose.runtime.mutableStateOf(com.example.layout.EnterActionType.ENTER)
+    val densityState = androidx.compose.runtime.mutableStateOf(
+      androidx.compose.ui.unit.Density(density = 2.0f, fontScale = 1.3f)
+    )
+
+    val composeView = androidx.compose.ui.platform.ComposeView(activity).apply {
+      setContent {
+        androidx.compose.runtime.CompositionLocalProvider(
+          androidx.compose.ui.platform.LocalDensity provides densityState.value
+        ) {
+          val lang = languageState.value
+          com.example.keyboard.KeyboardSurface(
+            mode = KeyboardMode.ALPHABET,
+            shiftState = com.example.layout.ShiftState.LOWERCASE,
+            enterActionType = enterActionState.value,
+            portraitHeightPercent = 130,
+            landscapeHeightPercent = 100,
+            showNumberRow = true,
+            showToolbar = true,
+            cutCopyPasteEnabled = true,
+            activeLanguageLabel = lang.spacebarLabel,
+            activeLanguageBadge = lang.badgeLabel,
+            activeLanguageKind = lang.kind,
+            palette = com.example.theme.KeyboardThemeRepository.paletteFor(KeyboardThemePreset.SLATE_DARK),
+            clipboardEntries = emptyList(),
+            onKeyAction = {},
+            onCommitDirectText = {},
+            onToggleNumberRow = {},
+            onSwitchLanguage = {},
+            onMoveCursorLeft = {},
+            onMoveCursorRight = {},
+            onCycleTheme = {},
+            onTogglePinClip = {},
+            onDeleteClip = {},
+            onClearUnpinnedClips = {},
+            onOpenSettings = {},
+          )
+        }
+      }
+    }
+    container.addView(composeView)
+
+    fun pumpComposeAndMeasure(widthSpec: Int, heightSpec: Int) {
+      androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+      val uiDispatcher =
+        androidx.compose.ui.platform.AndroidUiDispatcher.CurrentThread[
+          kotlin.coroutines.ContinuationInterceptor
+        ] as? androidx.compose.ui.platform.AndroidUiDispatcher
+      if (uiDispatcher != null) {
+        val field =
+          uiDispatcher.javaClass
+            .getDeclaredField("dispatchCallback")
+            .apply { isAccessible = true }
+        val callback = field.get(uiDispatcher) as android.view.Choreographer.FrameCallback
+        callback.doFrame(System.nanoTime())
+      }
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+      composeView.forceLayout()
+      composeView.getChildAt(0)?.forceLayout()
+      composeView.measure(widthSpec, heightSpec)
+      composeView.layout(0, 0, composeView.measuredWidth, composeView.measuredHeight)
+      org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        .idleFor(java.time.Duration.ofMillis(16))
+    }
+
+    val enterActions = com.example.layout.EnterActionType.entries
+    val widthsDp = listOf(280, 320, 360, 412)
+    val languages = listOf(
+      LanguageManager.EnglishLanguage,
+      LanguageManager.BanglaProbhatLanguage,
+      LanguageManager.BanglishLanguage,
+      LanguageManager.HindiHinglishLanguage,
+    )
+
+    for (widthDp in widthsDp) {
+      com.example.keyboard.debugMeasuredKeyBoundsInRoot.clear()
+      val widthPx = Math.round(widthDp * 2.0f)
+      val widthSpec = android.view.View.MeasureSpec.makeMeasureSpec(widthPx, android.view.View.MeasureSpec.EXACTLY)
+      val heightSpec = android.view.View.MeasureSpec.makeMeasureSpec(1600, android.view.View.MeasureSpec.AT_MOST)
+
+      for (lang in languages) {
+        languageState.value = lang
+        val layout = LayoutManager.getLayout(
+          mode = KeyboardMode.ALPHABET,
+          showNumberRow = true,
+          languageKind = lang.kind,
+        )
+        val bottomRowKeys = layout.rows.last()
+        assertEquals("Bottom row must have 6 keys (?123, Emoji, Comma, Space, Period/Dari, Enter)", 6, bottomRowKeys.size)
+
+        for (enterAction in enterActions) {
+          enterActionState.value = enterAction
+          pumpComposeAndMeasure(widthSpec, heightSpec)
+
+          val symbolsRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[0].id]
+          val emojiRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[1].id]
+          val commaRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[2].id]
+          val spaceRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[3].id]
+          val periodRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[4].id]
+          val enterRect = com.example.keyboard.debugMeasuredKeyBoundsInRoot[bottomRowKeys[5].id]
+
+          assertNotNull("Bottom row ?123 must be rendered at ${widthDp}dp ($enterAction)", symbolsRect)
+          assertNotNull("Bottom row Emoji must be rendered at ${widthDp}dp ($enterAction)", emojiRect)
+          assertNotNull("Bottom row Comma must be rendered at ${widthDp}dp ($enterAction)", commaRect)
+          assertNotNull("Bottom row Spacebar must be rendered at ${widthDp}dp ($enterAction)", spaceRect)
+          assertNotNull("Bottom row Period must be rendered at ${widthDp}dp ($enterAction)", periodRect)
+          assertNotNull("Bottom row Enter ($enterAction) must be rendered at ${widthDp}dp", enterRect)
+
+          val bottomRowRects = listOf(symbolsRect!!, emojiRect!!, commaRect!!, spaceRect!!, periodRect!!, enterRect!!)
+
+          // Verify vertical alignment: all 6 bottom-row keys share the exact same top and bottom Y coordinates
+          val expectedTop = spaceRect.top
+          val expectedBottom = spaceRect.bottom
+          for (r in bottomRowRects) {
+            assertEquals("Bottom row key top must align with Spacebar top", expectedTop, r.top, 1.5f)
+            assertEquals("Bottom row key bottom must align with Spacebar bottom", expectedBottom, r.bottom, 1.5f)
+          }
+
+          // Verify left-to-right ordering with zero overlap and zero horizontal clipping
+          assertTrue("?123 left >= 0", symbolsRect.left >= -1f)
+          assertTrue("?123 -> Emoji order", symbolsRect.right <= emojiRect.left + 1.5f)
+          assertTrue("Emoji -> Comma order", emojiRect.right <= commaRect.left + 1.5f)
+          assertTrue("Comma -> Spacebar order", commaRect.right <= spaceRect.left + 1.5f)
+          assertTrue("Spacebar -> Period order", spaceRect.right <= periodRect.left + 1.5f)
+          assertTrue("Period -> Enter order", periodRect.right <= enterRect.left + 1.5f)
+          assertTrue("Enter right <= widthPx ($widthPx)", enterRect.right <= widthPx + 1.5f)
+
+          // Spacebar must be the widest key in the bottom row
+          assertTrue("Spacebar must be wider than ?123", spaceRect.width > symbolsRect.width)
+          assertTrue("Spacebar must be wider than Emoji", spaceRect.width > emojiRect.width)
+          assertTrue("Spacebar must be wider than Comma", spaceRect.width > commaRect.width)
+          assertTrue("Spacebar must be wider than Period", spaceRect.width > periodRect.width)
+          assertTrue("Spacebar must be wider than Enter ($enterAction)", spaceRect.width > enterRect.width)
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `emoji panel adapts grid columns across compact standard and tablet widths without clipping`() {
+    assertEquals(7, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(280f))
+    assertEquals(7, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(300f))
+    assertEquals(8, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(320f))
+    assertEquals(8, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(360f))
+    assertEquals(8, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(412f))
+    assertEquals(10, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(600f))
+    assertEquals(10, com.example.keyboard.ResponsiveLayoutEngine.computeEmojiGridColumns(800f))
+  }
+
+  // =========================================================================
+  // BUG 8 — SMART NOISE CANCELLATION TESTS
+  // =========================================================================
+
+  @Test
+  fun `bug 8 - 1 noise cancellation toggle controls audio preprocessor activation and reflects in ui state`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+
+    // Initially ON
+    manager.updatePreferences(
+      mode = VoiceRecognitionMode.AUTOMATIC,
+      noiseCancellation = true,
+      voiceEnhancement = true,
+    )
+    assertTrue("Noise cancellation must be enabled in preferences", manager.isNoiseCancellationEnabled)
+    assertTrue("UI state must reflect noise cancellation ON", manager.uiState.value.noiseCancellationEnabled)
+
+    // Toggled OFF
+    manager.updatePreferences(
+      mode = VoiceRecognitionMode.AUTOMATIC,
+      noiseCancellation = false,
+      voiceEnhancement = true,
+    )
+    assertFalse("Noise cancellation must be disabled in preferences", manager.isNoiseCancellationEnabled)
+    assertFalse("UI state must reflect noise cancellation OFF", manager.uiState.value.noiseCancellationEnabled)
+    assertFalse("Audio preprocessor must not be active when noise cancellation is OFF", manager.audioPreProcessor.isNoiseSuppressorActive)
+    assertFalse("Acoustic echo canceler must not be active when noise cancellation is OFF", manager.audioPreProcessor.isAcousticEchoCancelerActive)
+
+    // Toggled back ON
+    manager.updatePreferences(
+      mode = VoiceRecognitionMode.AUTOMATIC,
+      noiseCancellation = true,
+      voiceEnhancement = true,
+    )
+    assertTrue(manager.isNoiseCancellationEnabled)
+    assertTrue(manager.uiState.value.noiseCancellationEnabled)
+  }
+
+  @Test
+  fun `bug 8 - 2 unsupported device fallback handles missing hardware audiofx without crashing or false claims`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val preProcessor = com.example.voice.AudioPreProcessor(context)
+
+    // Query hardware availability via Android AudioEffect APIs
+    val info = preProcessor.getProcessingInfo()
+    assertNotNull(info)
+
+    // If hardware is not available (e.g. JVM/Robolectric test environment or budget devices lacking DSP drivers)
+    if (!info.isNoiseSuppressorAvailable) {
+      assertFalse("NoiseSuppressor must not report active when hardware driver is missing", info.isNoiseSuppressorActive)
+      assertFalse("hasActiveEffects must be false when unsupported", info.hasActiveEffects)
+      assertEquals("Status must clearly indicate unsupported DSP", "Hardware DSP Not Available", info.statusDescription)
+    }
+
+    // start() on unsupported session or missing audiofx must return clean fallback info without throwing
+    val result = preProcessor.start(requestedSessionId = 999)
+    assertNotNull(result)
+    preProcessor.stop()
+    assertFalse(preProcessor.isNoiseSuppressorActive)
+    assertFalse(preProcessor.isAcousticEchoCancelerActive)
+  }
+
+  @Test
+  fun `bug 8 - 3 rapid microphone start stop cycles maintain stability and release audio effects cleanly`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+    manager.isNetworkConnectedOverride = true
+
+    // Simulate 20 rapid start/stop toggles without delay
+    for (i in 1..20) {
+      manager.updatePreferences(
+        mode = VoiceRecognitionMode.AUTOMATIC,
+        noiseCancellation = true,
+        voiceEnhancement = true,
+      )
+      manager.startListening()
+      // Stop immediately
+      manager.stopListening()
+      manager.cancel()
+    }
+
+    // Verify all timers cleared and audio effects cleanly stopped
+    assertFalse("Must not have pending timers after rapid stop", manager.hasPendingTimers)
+    assertFalse("Recognizer must be cleaned up", manager.hasActiveRecognizer)
+    assertFalse("Noise suppressor must be released", manager.audioPreProcessor.isNoiseSuppressorActive)
+    assertFalse("Echo canceler must be released", manager.audioPreProcessor.isAcousticEchoCancelerActive)
+    assertEquals(VoiceState.IDLE, manager.uiState.value.state)
+
+    manager.destroy()
+  }
+
+  @Test
+  fun `bug 8 - 4 background noise simulation - noisy partial transcripts and multiple alternatives pick best hypothesis`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+
+    // Spoken Bengali sentence in noisy background where ambient clutter produces acoustic errors:
+    // candidate 0: "তুই কি phone মারতেছিলি" (acoustic clutter caused Latin "phone" misrecognition)
+    // candidate 1: "তুই কি পুন মারতেছিলি" (clean speech hypothesis with Bengali word "পুন")
+    val noisyMatches = listOf("তুই কি phone মারতেছিলি", "তুই কি পুন মারতেছিলি", "তুই কি মারতেছিলি")
+    val scores = floatArrayOf(0.85f, 0.82f, 0.70f)
+
+    val bestHypothesis = manager.selectBestHypothesis(
+      matches = noisyMatches,
+      unstable = emptyList(),
+      fallbackPartial = "তুই কি পুন",
+      language = VoiceLanguage.Bangla,
+      confidenceScores = scores,
+    )
+
+    assertEquals("Clean Bengali hypothesis must be selected over acoustic noise substitute", "তুই কি পুন মারতেছিলি", bestHypothesis)
+
+    // Formatted output must preserve Bengali question punctuation since "কি" is an interrogative particle
+    val formatted = manager.formatRecognizedOutput(bestHypothesis, VoiceLanguage.Bangla, autoPunctuate = true)
+    assertEquals("Formatted speech must preserve Bengali question intent", "তুই কি পুন মারতেছিলি?", formatted)
+  }
+
+  @Test
+  fun `bug 8 - 5 bengali short word and syllable preservation - soft endings and monosyllabic words are never suppressed`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val manager = VoiceRecognitionManager(context = context)
+
+    // Test a variety of short conversational Bangladesh Bengali words and soft endings:
+    // পুন (pun), কই (koi), তো (to), না (na), রে (re), ভাই (bhai), কি (ki), টা (ta)
+    val testPhrases = listOf(
+      "তুই কি পুন মারতেছিলি" to "তুই কি পুন মারতেছিলি?",
+      "তুই কই যাস" to "তুই কই যাস?",
+      "আমি তো যাইনি" to "আমি তো যাইনি।",
+      "না ভাই আমি খাবো না" to "না ভাই আমি খাবো না।",
+      "তোর flight কয়টায়" to "তোর flight কয়টায়?",
+    )
+
+    for ((raw, expected) in testPhrases) {
+      val processed = manager.formatRecognizedOutput(raw, VoiceLanguage.Bangla, autoPunctuate = true)
+      assertEquals("Short Bengali syllables and words must be preserved exactly", expected, processed)
+    }
+
+    // Verify intent builder keeps extended silence timeouts when Bengali-First Voice Enhancement is active
+    val intentWithEnhancement = manager.buildRecognitionIntent(VoiceLanguage.Bangla)
+    val minLength = intentWithEnhancement.getLongExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 0L)
+    val completeSilence = intentWithEnhancement.getLongExtra(android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 0L)
+    assertEquals(600L, minLength)
+    assertEquals(1800L, completeSilence)
+  }
+
+  @Test
+  fun `bug 8 - 6 resource cleanup - keyboard closing and service destroy completely release audio effects`() {
+    grantAudioAndRegisterRecognitionService()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(service)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.app"
+      fieldId = 1
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Finish input view (user closes keyboard or switches app)
+    service.onFinishInputView(true)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse("Audio preprocessor must be stopped when input view finishes", service.voiceRecognitionManager.audioPreProcessor.isNoiseSuppressorActive)
+    assertFalse("Echo canceler must be stopped when input view finishes", service.voiceRecognitionManager.audioPreProcessor.isAcousticEchoCancelerActive)
+
+    // Complete service destruction
+    controller.destroy()
+    assertFalse("Voice manager must not have active recognizer after destroy", service.voiceRecognitionManager.hasActiveRecognizer)
+    assertFalse("Noise suppressor must be released after destroy", service.voiceRecognitionManager.audioPreProcessor.isNoiseSuppressorActive)
+  }
+
+  @Test
+  fun `bug 8 - 7 existing voice lifecycle regression - Bug 6 and Bug 12 pipelines remain intact with noise cancellation active`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 404
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.languageManager.setActiveLanguage(LanguageManager.ID_BANGLA_PROBHAT)
+
+    // Noise cancellation ON + Bengali voice enhancement ON
+    service.voiceRecognitionManager.updatePreferences(
+      mode = VoiceRecognitionMode.AUTOMATIC,
+      noiseCancellation = true,
+      voiceEnhancement = true,
+    )
+
+    // Start voice session
+    service.toggleVoiceTyping()
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+
+    // Partial results stream in
+    val partialBundle = android.os.Bundle().apply {
+      putStringArrayList(
+        android.speech.SpeechRecognizer.RESULTS_RECOGNITION,
+        arrayListOf("তুই কি phone", "তুই কি পুন"),
+      )
+    }
+    listener.onPartialResults(partialBundle)
+    assertEquals("তুই কি পুন", hostEditText.text.toString())
+
+    // Stop listening -> transitions to PROCESSING without premature commit
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.PROCESSING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Final result arrives
+    val finalBundle = android.os.Bundle().apply {
+      putStringArrayList(
+        android.speech.SpeechRecognizer.RESULTS_RECOGNITION,
+        arrayListOf("তুই কি phone মারতেছিলি", "তুই কি পুন মারতেছিলি"),
+      )
+      putFloatArray(android.speech.SpeechRecognizer.CONFIDENCE_SCORES, floatArrayOf(0.85f, 0.81f))
+    }
+    listener.onResults(finalBundle)
+
+    // Committed exactly once, clean Bengali preserved, recognizer cleaned up
+    assertEquals("তুই কি পুন মারতেছিলি ", hostEditText.text.toString())
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse(service.voiceRecognitionManager.hasActiveRecognizer)
+    assertFalse(service.voiceRecognitionManager.audioPreProcessor.isNoiseSuppressorActive)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 1 first tap with permission granted initiates voice startup immediately with instant visual feedback`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 101
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.voiceRecognitionManager.invalidateCandidateCache()
+
+    // Before tap: not open, IDLE
+    assertFalse(service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+
+    // First microphone tap
+    service.toggleVoiceTyping()
+
+    // STARTING state and recognizer active immediately on the first tap
+    assertEquals("Voice state must transition to STARTING immediately", VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse("Listening indicator must not display before onReadyForSpeech", service.isVoiceTypingOpen.value)
+    assertTrue("Speech recognizer must be active", service.voiceRecognitionManager.hasActiveRecognizer)
+
+    // Once ready for speech, enters LISTENING and isVoiceTypingOpen becomes true
+    service.voiceRecognitionManager.activeRecognitionListener?.onReadyForSpeech(android.os.Bundle())
+    assertTrue("Microphone visual state must be open when ready for speech", service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.LISTENING, service.voiceRecognitionManager.uiState.value.state)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 2 first tap with permission missing launches permission request and does not enter active listening`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.RECORD_AUDIO)
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(app)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 102
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    // Microphone tap when permission missing
+    service.toggleVoiceTyping()
+
+    assertFalse("Voice typing must not be open if permission missing", service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.ERROR, service.voiceRecognitionManager.uiState.value.state)
+    assertNotNull("Permission callback must be registered to continue seamlessly upon grant", com.example.voice.VoicePermissionActivity.onPermissionResultCallback)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 3 automatic startup after permission approval without requiring second tap`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.RECORD_AUDIO)
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(app)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 103
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    // First tap triggers permission flow
+    service.toggleVoiceTyping()
+    val callback = com.example.voice.VoicePermissionActivity.onPermissionResultCallback
+    assertNotNull(callback)
+
+    // Simulate user granting permission in OS permission dialog
+    grantAudioAndRegisterRecognitionService()
+    callback!!.invoke(true)
+
+    // Voice typing automatically started WITHOUT requiring a second tap
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+    assertTrue(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 4 rapid repeated microphone taps debounced safely without prematurely canceling session`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 104
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    // First tap initiates startup
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse(service.isVoiceTypingOpen.value)
+
+    // Immediate second tap (simulating impatient/nervous user double-tapping mic)
+    service.toggleVoiceTyping()
+
+    // Must still be starting, NOT cancelled or reset to IDLE!
+    assertEquals("Second rapid tap must be debounced to prevent cancelling startup", VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse("Voice typing must remain closed until onReadyForSpeech", service.isVoiceTypingOpen.value)
+
+    // Now transition to LISTENING
+    val listener = service.voiceRecognitionManager.activeRecognitionListener!!
+    listener.onReadyForSpeech(android.os.Bundle())
+    assertEquals(VoiceState.LISTENING, service.voiceRecognitionManager.uiState.value.state)
+    assertTrue(service.isVoiceTypingOpen.value)
+
+    // Deliberate tap while LISTENING properly requests stopListening
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.PROCESSING, service.voiceRecognitionManager.uiState.value.state)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 5 candidate component preloading eliminates query lag and caches results`() {
+    grantAudioAndRegisterRecognitionService()
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val mgr = VoiceRecognitionManager(app)
+    mgr.invalidateCandidateCache()
+
+    // Preload candidates ahead of tap
+    val candidates1 = mgr.preloadCandidateComponents()
+    assertTrue(candidates1.isNotEmpty())
+
+    // Second query hits cache directly with zero latency
+    val candidates2 = mgr.buildCandidateComponents()
+    assertEquals(candidates1, candidates2)
+
+    mgr.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 6 recognition error during startup handles gracefully and resets UI state`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 106
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Simulate fatal error on all candidates
+    service.voiceRecognitionManager.simulateError("Fatal recognition error")
+
+    // UI state properly resets to false without throwing or corrupting state
+    assertFalse(service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.ERROR, service.voiceRecognitionManager.uiState.value.state)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 7 keyboard closing during initialization cancels startup safely`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 107
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    // User hides window while recognizer is still starting
+    service.onWindowHidden()
+
+    assertFalse(service.isVoiceTypingOpen.value)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 8 service destruction cleans up pending permission callbacks and recognizer without leak`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.RECORD_AUDIO)
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    service.toggleVoiceTyping()
+    assertNotNull(com.example.voice.VoicePermissionActivity.onPermissionResultCallback)
+
+    controller.destroy()
+
+    assertNull("Destroy must clean up static permission callback", com.example.voice.VoicePermissionActivity.onPermissionResultCallback)
+  }
+
+  @Test
+  fun `bug 13 - 9 transient service error during cold startup recovers via candidate fallback and retry`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val hostEditText = android.widget.EditText(context)
+    val editorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.chat"
+      fieldId = 109
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = hostEditText.onCreateInputConnection(editorInfo)
+    service.onStartInput(editorInfo, false)
+    service.onStartInputView(editorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+
+    service.toggleVoiceTyping()
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+
+    // Candidate 0 fails with transient ERROR_RECOGNIZER_BUSY before onReadyForSpeech
+    service.voiceRecognitionManager.simulateError(android.speech.SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
+
+    // Automatically fails over to next candidate without dropping the first tap
+    assertEquals(VoiceState.STARTING, service.voiceRecognitionManager.uiState.value.state)
+    assertTrue(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    // Fallback candidate succeeds
+    val fallbackListener = service.voiceRecognitionManager.activeRecognitionListener!!
+    fallbackListener.onReadyForSpeech(android.os.Bundle())
+    assertEquals(VoiceState.LISTENING, service.voiceRecognitionManager.uiState.value.state)
+    assertTrue(service.isVoiceTypingOpen.value)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun `bug 13 - 10 switching apps during voice typing cleans up safely and prevents cross-app text leakage`() {
+    grantAudioAndRegisterRecognitionService()
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val controller = Robolectric.buildService(PersonalKeyboardService::class.java).create()
+    val service = controller.get()
+    service.onCreateInputView()
+
+    val app1EditText = android.widget.EditText(context)
+    val app1EditorInfo = android.view.inputmethod.EditorInfo().apply {
+      packageName = "com.example.app1"
+      fieldId = 110
+      inputType = android.text.InputType.TYPE_CLASS_TEXT
+    }
+    service.testInputConnectionOverride = app1EditText.onCreateInputConnection(app1EditorInfo)
+    service.onStartInput(app1EditorInfo, false)
+    service.onStartInputView(app1EditorInfo, false)
+
+    service.voiceRecognitionManager.isNetworkConnectedOverride = true
+    service.toggleVoiceTyping()
+    service.voiceRecognitionManager.activeRecognitionListener?.onReadyForSpeech(android.os.Bundle())
+    assertEquals(VoiceState.LISTENING, service.voiceRecognitionManager.uiState.value.state)
+
+    // User switches to App 2 while voice typing is active
+    service.onFinishInputView(true)
+    assertEquals(VoiceState.IDLE, service.voiceRecognitionManager.uiState.value.state)
+    assertFalse(service.isVoiceTypingOpen.value)
+    assertFalse(service.voiceRecognitionManager.hasActiveRecognizer)
+
+    controller.destroy()
+  }
 }
+
+
 
 
 

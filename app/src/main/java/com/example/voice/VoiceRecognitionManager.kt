@@ -150,6 +150,22 @@ class VoiceRecognitionManager(
       buildCandidateComponents().any { it != null }
   }
 
+  private var startupRetryCount: Int = 0
+
+  fun preloadCandidateComponents(): List<ComponentName?> {
+    return preloadCandidateComponents(appContext)
+  }
+
+  fun invalidateCandidateCache() {
+    cachedCandidateComponents = null
+  }
+
+  fun prewarm() {
+    runOnMainThread {
+      preloadCandidateComponents(appContext)
+    }
+  }
+
   fun resolveBestRecognitionComponent(): ComponentName? {
     return buildCandidateComponents().firstOrNull { it != null }
   }
@@ -163,82 +179,7 @@ class VoiceRecognitionManager(
    * while preserving automatic fallback to the system default and any other installed recognizer.
    */
   internal fun buildCandidateComponents(): List<ComponentName?> {
-    val result = mutableListOf<ComponentName?>()
-    val defaultServiceSetting =
-      runCatching {
-        Settings.Secure.getString(appContext.contentResolver, "voice_recognition_service")
-      }.getOrNull().orEmpty()
-
-    try {
-      val services =
-        appContext.packageManager.queryIntentServices(
-          Intent(RecognitionService.SERVICE_INTERFACE),
-          0,
-        )
-      val discoveredComponents =
-        services.orEmpty().mapNotNull { resolveInfo ->
-          val si = resolveInfo.serviceInfo ?: return@mapNotNull null
-          if (si.packageName.isNullOrBlank() || si.name.isNullOrBlank()) null
-          else ComponentName(si.packageName, si.name)
-        }
-
-      val summary = discoveredComponents.joinToString(",") { it.flattenToShortString() }
-      ImeDiagnosticsLogger.log(
-        category = "VOICE_TYPING",
-        event = "resolveRecognitionComponent",
-        details = "found=${discoveredComponents.size} defaultSetting='$defaultServiceSetting' services=[$summary]",
-      )
-      Log.d(
-        TAG,
-        "resolveRecognitionComponent: found=${discoveredComponents.size} defaultSetting='$defaultServiceSetting' services=[$summary]",
-      )
-
-      val googlePackageOrder =
-        listOf(
-          "com.google.android.tts",
-          "com.google.android.googlequicksearchbox",
-          "com.google.android.as",
-          "com.google.android.voicesearch",
-        )
-
-      for (pkg in googlePackageOrder) {
-        discoveredComponents
-          .filter { it.packageName == pkg }
-          .forEach { comp ->
-            if (!result.contains(comp)) {
-              result.add(comp)
-            }
-          }
-      }
-
-      if (defaultServiceSetting.isNotBlank()) {
-        ComponentName.unflattenFromString(defaultServiceSetting)?.let { configuredComp ->
-          val isXiaomiOem =
-            configuredComp.packageName.contains("xiaomi", ignoreCase = true) ||
-              configuredComp.packageName.contains("miui", ignoreCase = true) ||
-              configuredComp.packageName.contains("mibrain", ignoreCase = true)
-          if (!isXiaomiOem && !result.contains(configuredComp)) {
-            result.add(configuredComp)
-          }
-        }
-      }
-
-      // Include null (system default SpeechRecognizer.createSpeechRecognizer(context)) as fallback
-      result.add(null)
-
-      // Include any remaining discovered non-Google / OEM components as last-resort fallbacks
-      for (comp in discoveredComponents) {
-        if (!result.contains(comp)) {
-          result.add(comp)
-        }
-      }
-    } catch (e: Exception) {
-      Log.e(TAG, "buildCandidateComponents query error", e)
-      result.clear()
-      result.add(null)
-    }
-
-    return result
+    return preloadCandidateComponents(appContext)
   }
 
   fun setLanguage(language: VoiceLanguage) {
@@ -253,10 +194,15 @@ class VoiceRecognitionManager(
     forceExplicitComponent: Boolean = false,
   ) {
     runOnMainThread {
+      if (_uiState.value.state == VoiceState.STARTING && speechRecognizer != null && !readyReceivedInAttempt) {
+        Log.d(TAG, "startListening invoked while already STARTING; skipping duplicate call")
+        return@runOnMainThread
+      }
       clearAllTimers()
       readyReceivedInAttempt = false
       rmsLogCounter = 0
       finalResultDeliveredInSession = false
+      startupRetryCount = 0
       safelyDestroyRecognizer()
 
       if (!isVoiceInputEnabled) {
@@ -381,7 +327,6 @@ class VoiceRecognitionManager(
           audioProcessingInfo = audioInfo,
         )
       }
-      onListeningStateChanged?.invoke(false)
 
       startCandidateAt(index = 0, language = language)
     }
@@ -541,6 +486,7 @@ class VoiceRecognitionManager(
     language: VoiceLanguage,
     forcePreferOffline: Boolean = isPreferOfflineFallbackActive,
   ): Intent {
+    val isBengaliLocale = language.recognitionTag.startsWith("bn", ignoreCase = true)
     return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
       putExtra(
         RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -548,26 +494,27 @@ class VoiceRecognitionManager(
       )
       putExtra(RecognizerIntent.EXTRA_LANGUAGE, language.recognitionTag)
       putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language.recognitionTag)
-      putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+      putExtra(
+        RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE,
+        if (isBengaliLocale && !language.isBanglishOutput) language.recognitionTag else false,
+      )
       putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RECOGNITION_ALTERNATIVES)
+      putExtra(RecognizerIntent.EXTRA_CONFIDENCE_SCORES, true)
       putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
 
-      // Multi-language code-switching support (Android 13+ / Google Speech Services)
-      val additionalLangs = when {
-        language.tag.startsWith("bn", ignoreCase = true) || language.isBanglishOutput -> {
-          arrayOf("en-US")
+      // Avoid passing EXTRA_ADDITIONAL_LANGUAGES = ["en-US"] when dictating native Bengali (bn-BD),
+      // as active dual-language LID switching causes Google Speech Services to misclassify short or
+      // colloquial Bangladesh Bengali syllables (e.g., "পুন", "কই", "তো") as English lookalikes.
+      if (!isBengaliLocale) {
+        val additionalLangs = when {
+          language.tag.startsWith("en", ignoreCase = true) -> arrayOf("bn-BD")
+          language.tag.startsWith("hi", ignoreCase = true) -> arrayOf("en-US")
+          else -> arrayOf("en-US")
         }
-        language.tag.startsWith("en", ignoreCase = true) -> {
-          arrayOf("bn-BD")
-        }
-        language.tag.startsWith("hi", ignoreCase = true) -> {
-          arrayOf("en-US")
-        }
-        else -> arrayOf("en-US")
+        putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", additionalLangs)
       }
-      putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", additionalLangs)
-      putExtra("android.speech.extra.ENABLE_FORMATTING", true)
+      putExtra("android.speech.extra.ENABLE_FORMATTING", isAutoPunctuationEnabled)
       putExtra("android.speech.extra.ENABLE_BIASING_DEVICE_CONTEXT", true)
 
       val shouldPreferOffline = forcePreferOffline || !isNetworkConnected()
@@ -616,16 +563,21 @@ class VoiceRecognitionManager(
           clearStopFinalizeTimer()
           if (currentPartial.isNotEmpty() && !finalResultDeliveredInSession) {
             finalResultDeliveredInSession = true
+            val formatted = formatRecognizedOutput(
+              rawText = currentPartial,
+              language = _uiState.value.selectedLanguage,
+              autoPunctuate = isAutoPunctuationEnabled,
+            )
             _uiState.update {
               it.copy(
                 state = VoiceState.IDLE,
-                finalTranscription = currentPartial,
-                partialTranscription = currentPartial,
+                finalTranscription = formatted,
+                partialTranscription = formatted,
                 rmsNormalized = 0f,
               )
             }
             onListeningStateChanged?.invoke(false)
-            onSpeechRecognized(currentPartial)
+            onSpeechRecognized(formatted)
           } else {
             _uiState.update { it.copy(state = VoiceState.IDLE, rmsNormalized = 0f) }
             onListeningStateChanged?.invoke(false)
@@ -650,22 +602,27 @@ class VoiceRecognitionManager(
             val latestPartial = _uiState.value.partialTranscription.trim()
             if (latestPartial.isNotEmpty()) {
               finalResultDeliveredInSession = true
+              val formatted = formatRecognizedOutput(
+                rawText = latestPartial,
+                language = _uiState.value.selectedLanguage,
+                autoPunctuate = isAutoPunctuationEnabled,
+              )
               ImeDiagnosticsLogger.log(
                 category = "VOICE_TYPING",
                 event = "stopListening_autoCommitPartial",
-                details = "text='$latestPartial'",
+                details = "raw='$latestPartial' formatted='$formatted'",
               )
-              Log.d(TAG, "stopListening_autoCommitPartial: committing '$latestPartial'")
+              Log.d(TAG, "stopListening_autoCommitPartial: committing '$formatted'")
               _uiState.update {
                 it.copy(
                   state = VoiceState.IDLE,
-                  finalTranscription = latestPartial,
-                  partialTranscription = latestPartial,
+                  finalTranscription = formatted,
+                  partialTranscription = formatted,
                   rmsNormalized = 0f,
                 )
               }
               onListeningStateChanged?.invoke(false)
-              onSpeechRecognized(latestPartial)
+              onSpeechRecognized(formatted)
             } else {
               _uiState.update { it.copy(state = VoiceState.IDLE, rmsNormalized = 0f) }
               onListeningStateChanged?.invoke(false)
@@ -810,24 +767,13 @@ class VoiceRecognitionManager(
       if (!finalResultDeliveredInSession && _uiState.value.state == VoiceState.LISTENING) {
         val captured = _uiState.value.partialTranscription.trim()
         if (captured.isNotEmpty()) {
-          finalResultDeliveredInSession = true
           ImeDiagnosticsLogger.log(
             category = "VOICE_TYPING",
             event = "partialSilenceAutoStop",
             details = "text='$captured'",
           )
-          Log.d(TAG, "partialSilenceAutoStop triggered for text: '$captured'")
-          _uiState.update {
-            it.copy(
-              state = VoiceState.IDLE,
-              finalTranscription = captured,
-              partialTranscription = captured,
-              rmsNormalized = 0f,
-            )
-          }
-          onListeningStateChanged?.invoke(false)
-          safelyDestroyRecognizer()
-          onSpeechRecognized(captured)
+          Log.d(TAG, "partialSilenceAutoStop triggered for text: '$captured', requesting graceful stopListening()")
+          stopListening()
         }
       }
     }
@@ -965,6 +911,7 @@ class VoiceRecognitionManager(
         // Dynamically set EXTRA_PREFER_OFFLINE = true and instantly restart speechRecognizer.startListening(intent)
         // in silent offline fallback mode with a retry guard (maximum MAX_OFFLINE_FALLBACK_RETRIES attempts).
         if (
+          recognitionMode != VoiceRecognitionMode.ONLINE_ONLY &&
           (error == SpeechRecognizer.ERROR_NETWORK ||
             error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) &&
             offlineFallbackRetryCount < MAX_OFFLINE_FALLBACK_RETRIES
@@ -1001,10 +948,45 @@ class VoiceRecognitionManager(
           try {
             val activeRec = speechRecognizer
             if (activeRec != null) {
+              clearReadyWatchdog()
+              val retryIndex = candidateIndex
+              val retryWatchdog = Runnable {
+                readyWatchdogRunnable = null
+                if (!readyReceivedInAttempt && !finalResultDeliveredInSession) {
+                  ImeDiagnosticsLogger.log(
+                    category = "VOICE_TYPING",
+                    event = "readyWatchdogTimeout_offlineRetry",
+                    details = "candidateIndex=$retryIndex attempt=$offlineFallbackRetryCount",
+                  )
+                  Log.w(
+                    TAG,
+                    "Offline fallback retry did not call onReadyForSpeech within ${READY_WATCHDOG_TIMEOUT_MS}ms",
+                  )
+                  val nextIndex = retryIndex + 1
+                  if (nextIndex < candidateComponents.size) {
+                    startCandidateAt(nextIndex, language)
+                  } else {
+                    safelyDestroyRecognizer()
+                    _uiState.update {
+                      it.copy(
+                        state = VoiceState.ERROR,
+                        errorMessage = "Speech recognition timed out",
+                        rmsNormalized = 0f,
+                      )
+                    }
+                    onListeningStateChanged?.invoke(false)
+                    onErrorOccurred?.invoke("Speech recognition timed out")
+                  }
+                }
+              }
+              readyWatchdogRunnable = retryWatchdog
+              mainHandler.postDelayed(retryWatchdog, READY_WATCHDOG_TIMEOUT_MS)
+
               activeRec.startListening(intent)
               return
             }
           } catch (e: Exception) {
+            clearReadyWatchdog()
             Log.e(
               TAG,
               "Offline fallback startListening exception on attempt $offlineFallbackRetryCount",
@@ -1056,23 +1038,28 @@ class VoiceRecognitionManager(
               error == SpeechRecognizer.ERROR_CLIENT)
         ) {
           finalResultDeliveredInSession = true
+          val formatted = formatRecognizedOutput(
+            rawText = currentPartial,
+            language = language,
+            autoPunctuate = isAutoPunctuationEnabled,
+          )
           ImeDiagnosticsLogger.log(
             category = "VOICE_TYPING",
             event = "onError_rescuedPartial",
-            details = "text='$currentPartial'",
+            details = "raw='$currentPartial' formatted='$formatted'",
           )
-          Log.d(TAG, "onError: rescuing non-empty partial transcription '$currentPartial'")
+          Log.d(TAG, "onError: rescuing non-empty partial transcription '$formatted'")
           safelyDestroyRecognizer()
           _uiState.update {
             it.copy(
               state = VoiceState.IDLE,
-              finalTranscription = currentPartial,
-              partialTranscription = currentPartial,
+              finalTranscription = formatted,
+              partialTranscription = formatted,
               rmsNormalized = 0f,
             )
           }
           onListeningStateChanged?.invoke(false)
-          onSpeechRecognized(currentPartial)
+          onSpeechRecognized(formatted)
           return
         }
 
@@ -1090,6 +1077,27 @@ class VoiceRecognitionManager(
             "Candidate[$candidateIndex] ($candidateName) failed with error=$error; trying candidate[$nextIndex]",
           )
           startCandidateAt(nextIndex, language)
+          return
+        }
+
+        // If all candidates exhausted with transient service-level error (ERROR_CLIENT / ERROR_RECOGNIZER_BUSY)
+        // during cold start before speech began, retry primary candidate once after 120ms backoff
+        if (
+          isServiceLevelFailure &&
+            !readyReceivedInAttempt &&
+            startupRetryCount < 1 &&
+            candidateComponents.isNotEmpty()
+        ) {
+          startupRetryCount++
+          Log.w(
+            TAG,
+            "All candidates failed with transient service error=$error; retrying primary candidate after 120ms backoff",
+          )
+          mainHandler.postDelayed({
+            if (_uiState.value.state == VoiceState.STARTING || _uiState.value.state == VoiceState.PROCESSING) {
+              startCandidateAt(0, language)
+            }
+          }, 120L)
           return
         }
 
@@ -1114,21 +1122,25 @@ class VoiceRecognitionManager(
       override fun onResults(results: Bundle?) {
         if (activeRecognitionListener !== this) return
         clearAllTimers()
+        if (finalResultDeliveredInSession) {
+          Log.d(TAG, "onResults: session already finalized, ignoring late callback")
+          return
+        }
         val matches =
           extractStringsFromBundle(results, SpeechRecognizer.RESULTS_RECOGNITION).ifEmpty {
             extractStringsFromBundle(results, RecognizerIntent.EXTRA_RESULTS)
           }
         val unstable = extractStringsFromBundle(results, EXTRA_UNSTABLE_TEXT)
-        val bestFromMatches = matches.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-        val bestFromUnstable = unstable.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val confidenceScores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
         val fallbackPartial = _uiState.value.partialTranscription.trim()
 
-        val bestResult =
-          when {
-            bestFromMatches.isNotEmpty() -> bestFromMatches
-            bestFromUnstable.isNotEmpty() -> bestFromUnstable
-            else -> fallbackPartial
-          }
+        val bestResult = selectBestHypothesis(
+          matches = matches,
+          unstable = unstable,
+          fallbackPartial = fallbackPartial,
+          language = language,
+          confidenceScores = confidenceScores,
+        )
 
         val formattedResult =
           formatRecognizedOutput(bestResult, language, autoPunctuate = isAutoPunctuationEnabled)
@@ -1144,9 +1156,9 @@ class VoiceRecognitionManager(
         ImeDiagnosticsLogger.log(
           category = "VOICE_TYPING",
           event = "onResults",
-          details = "raw='$bestResult' formatted='$formattedResult' lang=${language.tag} isBanglish=${language.isBanglishOutput}",
+          details = "raw='$bestResult' formatted='$formattedResult' candidates=${matches.size} lang=${language.tag} isBanglish=${language.isBanglishOutput}",
         )
-        Log.d(TAG, "onResults: raw='$bestResult' -> formatted='$formattedResult' for lang=${language.tag}")
+        Log.d(TAG, "onResults: raw='$bestResult' -> formatted='$formattedResult' (candidates=${matches.size}) for lang=${language.tag}")
 
         safelyDestroyRecognizer()
         _uiState.update {
@@ -1169,23 +1181,20 @@ class VoiceRecognitionManager(
 
       override fun onPartialResults(partialResults: Bundle?) {
         if (activeRecognitionListener !== this) return
+        if (finalResultDeliveredInSession) {
+          Log.d(TAG, "onPartialResults: session already finalized, ignoring late partial callback")
+          return
+        }
         val matches =
           extractStringsFromBundle(partialResults, SpeechRecognizer.RESULTS_RECOGNITION).ifEmpty {
             extractStringsFromBundle(partialResults, RecognizerIntent.EXTRA_RESULTS)
           }
         val unstable = extractStringsFromBundle(partialResults, EXTRA_UNSTABLE_TEXT)
-        val stableText = matches.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-        val unstableText = unstable.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+        val stableText = selectBestPartialCandidate(matches, language)
+        val unstableText = selectBestPartialCandidate(unstable, language)
 
-        val bestPartial =
-          when {
-            stableText.isNotEmpty() &&
-              unstableText.isNotEmpty() &&
-              !stableText.endsWith(unstableText) -> "$stableText $unstableText"
-            stableText.isNotEmpty() -> stableText
-            unstableText.isNotEmpty() -> unstableText
-            else -> return
-          }
+        val bestPartial = mergeStreamingText(stableText, unstableText)
+        if (bestPartial.isBlank()) return
 
         val formattedPartial = VoicePostProcessor.process(
           rawText = bestPartial,
@@ -1219,6 +1228,217 @@ class VoiceRecognitionManager(
     }
   }
 
+  internal fun selectBestPartialCandidate(
+    candidates: List<String>,
+    language: VoiceLanguage,
+  ): String {
+    val clean = candidates.map { it.trim() }.filter { it.isNotBlank() }
+    if (clean.isEmpty()) return ""
+    if (clean.size == 1) return clean.first()
+    if (language.recognitionTag.startsWith("bn", ignoreCase = true)) {
+      val topWords = splitIntoWords(clean.first())
+      val pureBengali = clean.firstOrNull { cand ->
+        val words = splitIntoWords(cand)
+        words.size >= topWords.size && words.isNotEmpty() && words.all { containsBengaliScript(it) }
+      }
+      if (pureBengali != null) return pureBengali
+      val anyBengali = clean.firstOrNull { containsBengaliScript(it) }
+      if (anyBengali != null) return anyBengali
+    }
+    return clean.first()
+  }
+
+  internal fun selectBestHypothesis(
+    matches: List<String>,
+    unstable: List<String>,
+    fallbackPartial: String,
+    language: VoiceLanguage,
+    confidenceScores: FloatArray? = null,
+  ): String {
+    val isBengaliRecognition = language.recognitionTag.startsWith("bn", ignoreCase = true)
+    val cleanMatches = matches
+      .map { raw -> if (isBengaliRecognition) VoicePostProcessor.normalizeBengaliUnicode(raw.trim()) else raw.trim() }
+      .filter { it.isNotBlank() }
+    val cleanUnstable = unstable
+      .map { raw -> if (isBengaliRecognition) VoicePostProcessor.normalizeBengaliUnicode(raw.trim()) else raw.trim() }
+      .filter { it.isNotBlank() }
+    val normalizedFallback =
+      if (isBengaliRecognition && !language.isBanglishOutput) {
+        VoicePostProcessor.normalizeBengaliUnicode(fallbackPartial.trim())
+      } else {
+        fallbackPartial.trim()
+      }
+
+    if (cleanMatches.isEmpty() && cleanUnstable.isEmpty()) {
+      return normalizedFallback
+    }
+    if (cleanMatches.isEmpty()) {
+      return cleanUnstable.first()
+    }
+
+    var selected = cleanMatches.first()
+    val topConfidence = confidenceScores?.getOrNull(0) ?: -1f
+
+    // 1. Bengali (bn-BD) intelligent N-best hypothesis evaluation
+    if (isBengaliRecognition) {
+      val topWords = splitIntoWords(selected)
+      val topBengaliWords = topWords.count { containsBengaliScript(it) }
+
+      // 1a. Check if an alternative hypothesis in N-best matches recovers a short Bengali word
+      // that was dropped in matches[0] (e.g., "তুই কি মারতেছিলি" -> "তুই কি পুন মারতেছিলি")
+      val recoveredDroppedWordMatch = cleanMatches.indices.drop(1).firstNotNullOfOrNull { idx ->
+        val candidate = cleanMatches[idx]
+        val candConf = confidenceScores?.getOrNull(idx) ?: -1f
+        val confAcceptable = topConfidence <= 0f || candConf <= 0f || candConf >= (topConfidence - CONFIDENCE_MARGIN)
+        if (confAcceptable && isWordSubsequenceWithBengaliInsertion(topWords, splitIntoWords(candidate))) {
+          candidate
+        } else {
+          null
+        }
+      }
+
+      if (recoveredDroppedWordMatch != null) {
+        selected = recoveredDroppedWordMatch
+      } else if (topBengaliWords < topWords.size || topBengaliWords == 0) {
+        // 1b. If matches[0] has stray Latin misrecognitions of short Bengali words (e.g., "তুই কি phone মারতেছিলি"
+        // or "Ki koro"), prefer an alternative hypothesis with higher Bengali word coverage and no word loss.
+        val betterBengaliCandidate = cleanMatches.indices.drop(1).firstNotNullOfOrNull { idx ->
+          val candidate = cleanMatches[idx]
+          val candConf = confidenceScores?.getOrNull(idx) ?: -1f
+          val confAcceptable = topConfidence <= 0f || candConf <= 0f || candConf >= (topConfidence - CONFIDENCE_MARGIN)
+          val candWords = splitIntoWords(candidate)
+          val candBengaliWords = candWords.count { containsBengaliScript(it) }
+          val preservesLength = candWords.size >= topWords.size || topBengaliWords == 0
+          val improvesBengaliCoverage =
+            candBengaliWords > topBengaliWords &&
+              (candBengaliWords == candWords.size || topBengaliWords == 0)
+          if (confAcceptable && preservesLength && improvesBengaliCoverage) {
+            candidate
+          } else {
+            null
+          }
+        }
+        if (betterBengaliCandidate != null) {
+          selected = betterBengaliCandidate
+        }
+      }
+
+      // 1c. If streaming fallbackPartial captured a short Bengali word that all final hypotheses dropped,
+      // recover the complete utterance from fallbackPartial.
+      if (!language.isBanglishOutput && normalizedFallback.isNotBlank()) {
+        val selectedWords = splitIntoWords(selected)
+        val fallbackWords = splitIntoWords(normalizedFallback)
+        if (isWordSubsequenceWithBengaliInsertion(selectedWords, fallbackWords)) {
+          selected = normalizedFallback
+        }
+      }
+    } else if (language.tag.startsWith("hi", ignoreCase = true)) {
+      val devanagariMatch = cleanMatches.firstOrNull { candidate ->
+        candidate.any { char -> char in '\u0900'..'\u097F' }
+      }
+      if (devanagariMatch != null) {
+        selected = devanagariMatch
+      }
+    }
+
+    // 2. Completeness check: if selected match is 1 word but fallbackPartial is a full sentence (>= 3 words),
+    // prefer a candidate from matches that contains the full utterance.
+    if (normalizedFallback.isNotBlank()) {
+      val fallbackWordCount = splitIntoWords(normalizedFallback).size
+      val selectedWordCount = splitIntoWords(selected).size
+      if (selectedWordCount <= 1 && fallbackWordCount >= 3) {
+        val completeMatch = cleanMatches.firstOrNull { candidate ->
+          splitIntoWords(candidate).size >= fallbackWordCount - 1
+        }
+        if (completeMatch != null) {
+          selected = completeMatch
+        } else if (!language.isBanglishOutput || !containsBengaliScript(selected)) {
+          selected = normalizedFallback
+        }
+      }
+    }
+
+    // 3. Merge any trailing unstable tokens not yet folded into the final result
+    if (cleanUnstable.isNotEmpty()) {
+      selected = mergeStreamingText(selected, cleanUnstable.first())
+    }
+
+    return selected
+  }
+
+  /**
+   * Returns true if [shorterWords] is an ordered word-subsequence of [longerWords] with 1..2 extra
+   * Bengali-script words inserted (recovering short conversational words dropped by beam rescoring).
+   */
+  internal fun isWordSubsequenceWithBengaliInsertion(
+    shorterWords: List<String>,
+    longerWords: List<String>,
+  ): Boolean {
+    if (shorterWords.isEmpty()) return false
+    val diff = longerWords.size - shorterWords.size
+    if (diff !in 1..2) return false
+
+    var shortIdx = 0
+    val insertedWords = mutableListOf<String>()
+    for (longIdx in longerWords.indices) {
+      val longWord = longerWords[longIdx]
+      val normLong = longWord.trim('?', '!', '.', '।', ',')
+      val normShort =
+        if (shortIdx < shorterWords.size) shorterWords[shortIdx].trim('?', '!', '.', '।', ',') else ""
+
+      if (shortIdx < shorterWords.size && normLong.equals(normShort, ignoreCase = true)) {
+        shortIdx++
+      } else {
+        // Must not be an accidental stutter/duplicate of adjacent word
+        val prevWord = if (longIdx > 0) longerWords[longIdx - 1].trim('?', '!', '.', '।', ',') else ""
+        val nextWord =
+          if (longIdx + 1 < longerWords.size) longerWords[longIdx + 1].trim('?', '!', '.', '।', ',') else ""
+        if (normLong.equals(prevWord, ignoreCase = true) || normLong.equals(nextWord, ignoreCase = true)) {
+          return false
+        }
+        insertedWords.add(normLong)
+      }
+    }
+
+    if (shortIdx != shorterWords.size) return false
+    return insertedWords.isNotEmpty() && insertedWords.all { containsBengaliScript(it) }
+  }
+
+  private fun splitIntoWords(text: String): List<String> {
+    if (text.isBlank()) return emptyList()
+    return text.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+  }
+
+  private fun containsBengaliScript(text: String): Boolean {
+    for (ch in text) {
+      if (ch in '\u0980'..'\u09FF') return true
+    }
+    return false
+  }
+
+  internal fun mergeStreamingText(stable: String, unstable: String): String {
+    if (stable.isEmpty()) return unstable
+    if (unstable.isEmpty()) return stable
+    if (stable.equals(unstable, ignoreCase = true) || stable.endsWith(unstable, ignoreCase = true)) {
+      return stable
+    }
+    if (unstable.startsWith(stable, ignoreCase = true)) {
+      return unstable
+    }
+    val stableWords = stable.split("\\s+".toRegex()).filter { it.isNotBlank() }
+    val unstableWords = unstable.split("\\s+".toRegex()).filter { it.isNotBlank() }
+    val maxOverlap = minOf(stableWords.size, unstableWords.size)
+    for (overlapLen in maxOverlap downTo 1) {
+      val stableSuffix = stableWords.takeLast(overlapLen).joinToString(" ")
+      val unstablePrefix = unstableWords.take(overlapLen).joinToString(" ")
+      if (stableSuffix.equals(unstablePrefix, ignoreCase = true)) {
+        val remainingUnstable = unstableWords.drop(overlapLen).joinToString(" ")
+        return if (remainingUnstable.isNotEmpty()) "$stable $remainingUnstable" else stable
+      }
+    }
+    return "$stable $unstable"
+  }
+
   private fun runOnMainThread(action: () -> Unit) {
     if (Looper.myLooper() == Looper.getMainLooper()) {
       action()
@@ -1230,9 +1450,108 @@ class VoiceRecognitionManager(
   companion object {
     private const val TAG = "VoiceRecognitionMgr"
     const val MAX_OFFLINE_FALLBACK_RETRIES = 2
+    const val MAX_RECOGNITION_ALTERNATIVES = 10
+    private const val CONFIDENCE_MARGIN = 0.25f
     private const val READY_WATCHDOG_TIMEOUT_MS = 2500L
     private const val PARTIAL_SILENCE_AUTO_STOP_MS = 2200L
     private const val STOP_FINALIZE_TIMEOUT_MS = 800L
     private const val EXTRA_UNSTABLE_TEXT = "android.speech.extra.UNSTABLE_TEXT"
+
+    @Volatile
+    private var cachedCandidateComponents: List<ComponentName?>? = null
+    @Volatile
+    private var cachedAppIdentityHash: Int = 0
+
+    fun preloadCandidateComponents(context: Context): List<ComponentName?> {
+      val appCtx = context.applicationContext ?: context
+      val appHash = System.identityHashCode(appCtx)
+      val cached = cachedCandidateComponents
+      if (cached != null && cachedAppIdentityHash == appHash && cached.any { it != null }) {
+        return cached
+      }
+      val candidates = queryCandidateComponents(appCtx)
+      cachedCandidateComponents = candidates
+      cachedAppIdentityHash = appHash
+      return candidates
+    }
+
+    private fun queryCandidateComponents(appContext: Context): List<ComponentName?> {
+      val result = mutableListOf<ComponentName?>()
+      val defaultServiceSetting =
+        runCatching {
+          Settings.Secure.getString(appContext.contentResolver, "voice_recognition_service")
+        }.getOrNull().orEmpty()
+
+      try {
+        val services =
+          appContext.packageManager.queryIntentServices(
+            Intent(RecognitionService.SERVICE_INTERFACE),
+            0,
+          )
+        val discoveredComponents =
+          services.orEmpty().mapNotNull { resolveInfo ->
+            val si = resolveInfo.serviceInfo ?: return@mapNotNull null
+            if (si.packageName.isNullOrBlank() || si.name.isNullOrBlank()) null
+            else ComponentName(si.packageName, si.name)
+          }
+
+        val summary = discoveredComponents.joinToString(",") { it.flattenToShortString() }
+        ImeDiagnosticsLogger.log(
+          category = "VOICE_TYPING",
+          event = "resolveRecognitionComponent",
+          details = "found=${discoveredComponents.size} defaultSetting='$defaultServiceSetting' services=[$summary]",
+        )
+        Log.d(
+          TAG,
+          "resolveRecognitionComponent: found=${discoveredComponents.size} defaultSetting='$defaultServiceSetting' services=[$summary]",
+        )
+
+        val googlePackageOrder =
+          listOf(
+            "com.google.android.tts",
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.as",
+            "com.google.android.voicesearch",
+          )
+
+        for (pkg in googlePackageOrder) {
+          discoveredComponents
+            .filter { it.packageName == pkg }
+            .forEach { comp ->
+              if (!result.contains(comp)) {
+                result.add(comp)
+              }
+            }
+        }
+
+        if (defaultServiceSetting.isNotBlank()) {
+          ComponentName.unflattenFromString(defaultServiceSetting)?.let { configuredComp ->
+            val isXiaomiOem =
+              configuredComp.packageName.contains("xiaomi", ignoreCase = true) ||
+                configuredComp.packageName.contains("miui", ignoreCase = true) ||
+                configuredComp.packageName.contains("mibrain", ignoreCase = true)
+            if (!isXiaomiOem && !result.contains(configuredComp)) {
+              result.add(configuredComp)
+            }
+          }
+        }
+
+        // Include null (system default SpeechRecognizer.createSpeechRecognizer(context)) as fallback
+        result.add(null)
+
+        // Include any remaining discovered non-Google / OEM components as last-resort fallbacks
+        for (comp in discoveredComponents) {
+          if (!result.contains(comp)) {
+            result.add(comp)
+          }
+        }
+      } catch (e: Exception) {
+        Log.e(TAG, "buildCandidateComponents query error", e)
+        result.clear()
+        result.add(null)
+      }
+
+      return result
+    }
   }
 }

@@ -43,6 +43,9 @@ class AudioPreProcessor(private val context: Context) {
   val isAutomaticGainControlActive: Boolean
     get() = gainControl?.enabled == true
 
+  val currentSessionId: Int
+    get() = activeSessionId ?: 0
+
   fun getProcessingInfo(): AudioProcessingInfo {
     return AudioProcessingInfo(
       isNoiseSuppressorAvailable = isNoiseSuppressorAvailable,
@@ -51,6 +54,7 @@ class AudioPreProcessor(private val context: Context) {
       isNoiseSuppressorActive = isNoiseSuppressorActive,
       isAcousticEchoCancelerActive = isAcousticEchoCancelerActive,
       isAutomaticGainControlActive = isAutomaticGainControlActive,
+      activeSessionId = currentSessionId,
     )
   }
 
@@ -58,8 +62,9 @@ class AudioPreProcessor(private val context: Context) {
    * Initializes and activates audio pre-processing filters on the given audioSessionId
    * or a newly generated audio session from AudioManager.
    */
+  @Synchronized
   fun start(requestedSessionId: Int? = null): AudioProcessingInfo {
-    stop() // Ensure previous effects are cleanly released
+    stop() // Ensure previous effects are cleanly released before creating new ones
 
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     val sessionId = requestedSessionId
@@ -73,7 +78,7 @@ class AudioPreProcessor(private val context: Context) {
 
     activeSessionId = sessionId
 
-    // 1. Noise Suppressor
+    // 1. Noise Suppressor (cleans background noise and ambient acoustic clutter)
     if (isNoiseSuppressorAvailable) {
       runCatching {
         noiseSuppressor = NoiseSuppressor.create(sessionId)?.apply {
@@ -85,7 +90,7 @@ class AudioPreProcessor(private val context: Context) {
       }
     }
 
-    // 2. Acoustic Echo Canceler
+    // 2. Acoustic Echo Canceler (cancels speaker feedback when audio is playing)
     if (isAcousticEchoCancelerAvailable) {
       runCatching {
         echoCanceler = AcousticEchoCanceler.create(sessionId)?.apply {
@@ -97,7 +102,7 @@ class AudioPreProcessor(private val context: Context) {
       }
     }
 
-    // 3. Automatic Gain Control
+    // 3. Automatic Gain Control (normalizes microphone input levels)
     if (isAutomaticGainControlAvailable) {
       runCatching {
         gainControl = AutomaticGainControl.create(sessionId)?.apply {
@@ -120,6 +125,7 @@ class AudioPreProcessor(private val context: Context) {
   /**
    * Safely disables and releases all active audio effects.
    */
+  @Synchronized
   fun stop() {
     noiseSuppressor?.let { ns ->
       runCatching {

@@ -241,6 +241,7 @@ class PersonalKeyboardService :
 
   private var lastShiftTapTimeMs: Long = 0L
   private var lastSpaceTapTimeMs: Long = 0L
+  private var lastVoiceToggleTapTimeMs: Long = 0L
 
   private var isWindowVisible: Boolean = false
   private var activeEditorPackageName: String? = null
@@ -259,6 +260,11 @@ class PersonalKeyboardService :
   private var voiceHasComposingText: Boolean = false
   private var voiceFinalCommittedInUtterance: Boolean = false
   private var lastVoicePartialText: String = ""
+
+  // Active voice session metadata to prevent cross-app text injection and late callbacks
+  private var activeVoiceSessionId: Long = 0L
+  private var activeVoiceTargetPackage: String? = null
+  private var activeVoiceTargetFieldId: Int = 0
 
   internal var testInputConnectionOverride: android.view.inputmethod.InputConnection? = null
 
@@ -289,6 +295,7 @@ class PersonalKeyboardService :
         val targetVoiceLang = VoiceLanguage.forLanguageId(activeLang.id)
         _voiceRecognitionManager?.let { mgr ->
           if (mgr.uiState.value.selectedLanguage != targetVoiceLang) {
+            cancelActiveVoiceSessionIfNeeded()
             mgr.setLanguage(targetVoiceLang)
           }
         }
@@ -304,7 +311,7 @@ class PersonalKeyboardService :
           waveformAndHaptics = cfg.voiceWaveformAndHaptics,
           voiceInputEnabled = cfg.voiceInputEnabled,
         )
-        if (!cfg.voiceInputEnabled && _isVoiceTypingOpen.value) {
+        if (!cfg.voiceInputEnabled) {
           cancelActiveVoiceSessionIfNeeded()
         }
         if (!cfg.voiceWaveformAndHaptics && _voiceRmsScaleComposeState.floatValue != 1.0f) {
@@ -695,7 +702,13 @@ class PersonalKeyboardService :
       setViewTreeLifecycleOwner(this@PersonalKeyboardService)
       setViewTreeViewModelStoreOwner(this@PersonalKeyboardService)
       setViewTreeSavedStateRegistryOwner(this@PersonalKeyboardService)
-      addView(composeView)
+      addView(
+        composeView,
+        android.widget.FrameLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.WRAP_CONTENT,
+        ),
+      )
     }
   }
 
@@ -727,6 +740,9 @@ class PersonalKeyboardService :
       lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
     clipboardController.syncFromSystemClipboard()
+    if (::preferencesRepository.isInitialized && preferencesRepository.config.value.voiceInputEnabled) {
+      VoiceRecognitionManager.preloadCandidateComponents(this)
+    }
   }
 
   override fun onWindowHidden() {
@@ -739,7 +755,7 @@ class PersonalKeyboardService :
     )
     commitAllPhoneticBuffers()
     resetEmojiSearchState()
-    _voiceRecognitionManager?.cancel()
+    cancelActiveVoiceSessionIfNeeded()
     closeTranslatorPanel()
     setVoiceTypingOpen(false)
     if (_isLanguageSelectorOpen.value) {
@@ -799,6 +815,10 @@ class PersonalKeyboardService :
       event = "onFinishInputView",
       details = "finishingInput=$finishingInput mode=${_sessionState.value.mode} searchFocused=${_sessionState.value.isEmojiSearchFocused}",
     )
+    commitAllPhoneticBuffers()
+    if (finishingInput) {
+      cancelActiveVoiceSessionIfNeeded()
+    }
     super.onFinishInputView(finishingInput)
   }
 
@@ -808,6 +828,10 @@ class PersonalKeyboardService :
       event = "onFinishInput",
       details = "mode=${_sessionState.value.mode} searchFocused=${_sessionState.value.isEmojiSearchFocused}",
     )
+    commitAllPhoneticBuffers()
+    cancelActiveVoiceSessionIfNeeded()
+    activeEditorPackageName = null
+    activeEditorFieldId = 0
     super.onFinishInput()
   }
 
@@ -826,6 +850,10 @@ class PersonalKeyboardService :
       editorInfo == null ||
         (editorInfo.packageName == activeEditorPackageName &&
           editorInfo.fieldId == activeEditorFieldId)
+
+    if (!isSameEditor) {
+      cancelActiveVoiceSessionIfNeeded()
+    }
 
     ImeDiagnosticsLogger.log(
       category = "IME_LIFECYCLE",
@@ -1586,37 +1614,56 @@ class PersonalKeyboardService :
     }
 
     val currentVoiceState = _voiceRecognitionManager?.uiState?.value?.state ?: VoiceState.IDLE
-    val hasActiveRecognizer = _voiceRecognitionManager?.hasActiveRecognizer == true
-    val isCurrentlyActive =
+    val now = android.os.SystemClock.uptimeMillis()
+    val timeSinceLastToggle = now - lastVoiceToggleTapTimeMs
+    lastVoiceToggleTapTimeMs = now
+
+    // Debounce rapid double-taps during startup:
+    // If recognizer is currently in STARTING state and user taps again within 650ms,
+    // ignore the redundant tap so startup is not prematurely cancelled.
+    if (currentVoiceState == VoiceState.STARTING && timeSinceLastToggle < 650L) {
+      Log.d("PersonalKeyboardVoice", "Ignoring rapid second tap during voice startup window")
+      return
+    }
+
+    val isSessionActive =
       _isVoiceTypingOpen.value ||
-        hasActiveRecognizer ||
-        currentVoiceState == VoiceState.LISTENING ||
         currentVoiceState == VoiceState.STARTING ||
+        currentVoiceState == VoiceState.LISTENING ||
         currentVoiceState == VoiceState.PROCESSING
-    if (!isCurrentlyActive) {
+
+    if (!isSessionActive) {
       triggerVoiceHaptic()
+      cancelActiveVoiceSessionIfNeeded()
       commitAllPhoneticBuffers()
       resetVoiceUtteranceState()
       _isLanguageSelectorOpen.value = false
       closeTranslatorPanel()
       _sessionState.update { it.copy(isEmojiSearchFocused = false) }
+
       val voiceLang = VoiceLanguage.forLanguageId(languageManager.activeLanguage.value.id)
       val ic = currentInputConnection
       val editorInfo = currentInputEditorInfo
+      activeVoiceSessionId = android.os.SystemClock.uptimeMillis()
+      activeVoiceTargetPackage = editorInfo?.packageName ?: activeEditorPackageName
+      activeVoiceTargetFieldId = editorInfo?.fieldId ?: activeEditorFieldId
+
       ImeDiagnosticsLogger.log(
         category = "VOICE_TYPING",
         event = "toggleVoiceTyping_start",
-        details = "engine=V1 lang=${voiceLang.tag} icValid=${ic != null} pkg=${editorInfo?.packageName ?: activeEditorPackageName} fieldId=${editorInfo?.fieldId ?: activeEditorFieldId}",
+        details = "engine=V1 lang=${voiceLang.tag} icValid=${ic != null} pkg=$activeVoiceTargetPackage fieldId=$activeVoiceTargetFieldId",
       )
       Log.d(
         "PersonalKeyboardVoice",
-        "toggleVoiceTyping_start: engine=V1 lang=${voiceLang.tag} icValid=${ic != null} pkg=${editorInfo?.packageName ?: activeEditorPackageName}",
+        "toggleVoiceTyping_start: engine=V1 lang=${voiceLang.tag} icValid=${ic != null} pkg=$activeVoiceTargetPackage",
       )
       voiceRecognitionManager.refreshConnectivityMode()
       voiceRecognitionManager.setLanguage(voiceLang)
       voiceRecognitionManager.startListening(voiceLang)
     } else {
       triggerVoiceHaptic()
+      setVoiceTypingOpen(false)
+      resetVoiceRmsScale()
       ImeDiagnosticsLogger.log(
         category = "VOICE_TYPING",
         event = "toggleVoiceTyping_stop",
@@ -1626,18 +1673,17 @@ class PersonalKeyboardService :
         "PersonalKeyboardVoice",
         "toggleVoiceTyping_stop: engine=V1 state=$currentVoiceState hadComposing=$voiceHasComposingText partial='$lastVoicePartialText'",
       )
-      if (voiceHasComposingText && lastVoicePartialText.isNotBlank() && !voiceFinalCommittedInUtterance) {
-        commitVoiceText(lastVoicePartialText)
-        voiceRecognitionManager.cancel()
+      if (currentVoiceState == VoiceState.PROCESSING) {
+        voiceRecognitionManager.commitAndFinish()
       } else if (currentVoiceState == VoiceState.STARTING) {
         voiceRecognitionManager.cancel()
+        if (voiceHasComposingText) {
+          currentInputConnection?.finishComposingText()
+        }
         resetVoiceUtteranceState()
-        setVoiceTypingOpen(false)
       } else {
+        // VoiceState.LISTENING: Request graceful stopListening to allow final recognition rescoring within bounded timeout
         voiceRecognitionManager.stopListening()
-        currentInputConnection?.finishComposingText()
-        resetVoiceUtteranceState()
-        setVoiceTypingOpen(false)
       }
     }
   }
@@ -1651,6 +1697,19 @@ class PersonalKeyboardService :
     val editorInfo = currentInputEditorInfo
     val targetPkg = editorInfo?.packageName ?: activeEditorPackageName
     val targetFieldId = editorInfo?.fieldId ?: activeEditorFieldId
+
+    if (activeVoiceTargetPackage != null && targetPkg != null && activeVoiceTargetPackage != targetPkg) {
+      ImeDiagnosticsLogger.log(
+        category = "VOICE_TYPING",
+        event = "handleVoicePartial_targetPackageMismatch",
+        details = "expectedPkg=$activeVoiceTargetPackage actualPkg=$targetPkg partial='$cleanPartial'",
+      )
+      Log.w(
+        "PersonalKeyboardVoice",
+        "handleVoicePartial dropped: target package mismatch ($activeVoiceTargetPackage vs $targetPkg)",
+      )
+      return
+    }
 
     ImeDiagnosticsLogger.log(
       category = "VOICE_TYPING",
@@ -1718,11 +1777,17 @@ class PersonalKeyboardService :
     )
     Log.w("PersonalKeyboardVoice", "RECORD_AUDIO permission missing; launching VoicePermissionActivity")
     VoicePermissionActivity.onPermissionResultCallback = { granted ->
-      VoicePermissionActivity.clearPermissionCallback()
       if (granted) {
         val voiceLang = VoiceLanguage.forLanguageId(languageManager.activeLanguage.value.id)
+        val editorInfo = currentInputEditorInfo
+        activeVoiceSessionId = android.os.SystemClock.uptimeMillis()
+        activeVoiceTargetPackage = editorInfo?.packageName ?: activeEditorPackageName
+        activeVoiceTargetFieldId = editorInfo?.fieldId ?: activeEditorFieldId
+        voiceRecognitionManager.refreshConnectivityMode()
         voiceRecognitionManager.setLanguage(voiceLang)
         voiceRecognitionManager.startListening(voiceLang)
+      } else {
+        setVoiceTypingOpen(false)
       }
     }
     runCatching {
@@ -1845,6 +1910,20 @@ class PersonalKeyboardService :
     val editorInfo = currentInputEditorInfo
     val targetPkg = editorInfo?.packageName ?: activeEditorPackageName
     val targetFieldId = editorInfo?.fieldId ?: activeEditorFieldId
+
+    if (activeVoiceTargetPackage != null && targetPkg != null && activeVoiceTargetPackage != targetPkg) {
+      ImeDiagnosticsLogger.log(
+        category = "VOICE_TYPING",
+        event = "commitVoiceText_targetPackageMismatch",
+        details = "expectedPkg=$activeVoiceTargetPackage actualPkg=$targetPkg text='$cleanText'",
+      )
+      Log.w(
+        "PersonalKeyboardVoice",
+        "commitVoiceText dropped: target package mismatch ($activeVoiceTargetPackage vs $targetPkg)",
+      )
+      resetVoiceUtteranceState()
+      return
+    }
 
     ImeDiagnosticsLogger.log(
       category = "VOICE_TYPING",

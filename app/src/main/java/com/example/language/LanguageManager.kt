@@ -56,13 +56,9 @@ class LanguageManager {
   }
 
   /**
-   * Spacebar swipe left:
-   * - If English -> switches to বাংলা (Probhat)
-   * - If Probhat -> switches to Banglish
-   * - If Banglish -> switches to हिन्दी (Hinglish)
-   * - If Hindi -> switches to বাংলা (Probhat)
-   *
-   * Preserves existing swipe switching between English and Bengali without breaking.
+   * Spacebar swipe left (Forward Cycle):
+   * English -> বাংলা (Probhat) -> Banglish -> हिन्दी (Hinglish) -> English.
+   * Cycles indefinitely.
    *
    * @return true if the active language changed.
    */
@@ -73,8 +69,8 @@ class LanguageManager {
         ID_ENGLISH -> BanglaProbhatLanguage
         ID_BANGLA_PROBHAT -> BanglishLanguage
         ID_BANGLISH -> HindiHinglishLanguage
-        ID_HINDI_HINGLISH -> BanglaProbhatLanguage
-        else -> BanglaProbhatLanguage
+        ID_HINDI_HINGLISH -> EnglishLanguage
+        else -> EnglishLanguage
       }
 
     if (target.id == current.id) return false
@@ -83,15 +79,25 @@ class LanguageManager {
   }
 
   /**
-   * Ridmik-style spacebar swipe right:
-   * Switches directly to English QWERTY mode.
+   * Spacebar swipe right (Reverse Cycle):
+   * English -> हिन्दी (Hinglish) -> Banglish -> বাংলা (Probhat) -> English.
+   * Cycles indefinitely.
    *
    * @return true if the active language changed.
    */
   fun onSpacebarSwipeRight(): Boolean {
     val current = _activeLanguage.value
-    if (current.id == ID_ENGLISH) return false
-    _activeLanguage.value = EnglishLanguage
+    val target =
+      when (current.id) {
+        ID_ENGLISH -> HindiHinglishLanguage
+        ID_HINDI_HINGLISH -> BanglishLanguage
+        ID_BANGLISH -> BanglaProbhatLanguage
+        ID_BANGLA_PROBHAT -> EnglishLanguage
+        else -> EnglishLanguage
+      }
+
+    if (target.id == current.id) return false
+    _activeLanguage.value = target
     return true
   }
 

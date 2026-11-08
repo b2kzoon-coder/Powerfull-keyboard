@@ -187,4 +187,91 @@ object KeyboardTypography {
       (ENGLISH_HINT_FONT_SIZE_SP * scale).sp
     }
   }
+
+  /**
+   * Sub-linear height scale for multi-character functional labels ("?123", "ABC", "Search", "Done")
+   * and emoji icons so increasing vertical row height (e.g. default 130% up to 180%) does not
+   * expand label width beyond horizontal key boundaries.
+   */
+  fun getFunctionalLabelControlledScale(heightScale: Float): Float {
+    return (1.0f + (heightScale - 1.0f) * 0.28f).coerceIn(0.72f, 1.22f)
+  }
+
+  /**
+   * Width- and height-aware key font size resolver used by [KeyButton].
+   * Ensures labels (`?123`, `😊`, `Search`, `Done`, 12-key Probhat characters, spacebar labels)
+   * never overflow or ellipsis horizontally on narrow screens, high display zoom, or tall row heights.
+   */
+  fun resolveResponsiveKeyFontSize(
+    displayText: String,
+    isSpacebar: Boolean,
+    heightScale: Float,
+    fontScale: Float = 1.0f,
+    allocatedKeyWidthDp: Float = 0f,
+    keyHorizontalPaddingDp: Float = 1.8f,
+  ): TextUnit {
+    val baseFontSize = resolveFontSize(displayText, isSpacebar, heightScale, fontScale)
+    if (allocatedKeyWidthDp <= 0f || displayText.isEmpty()) {
+      return baseFontSize
+    }
+
+    val fontDamping = getEffectiveFontScaleDamping(fontScale)
+    val innerWidthDp = (allocatedKeyWidthDp - (keyHorizontalPaddingDp * 2f) - 3.0f).coerceAtLeast(10f)
+    val codePointCount = displayText.codePointCount(0, displayText.length).coerceAtLeast(1)
+    val isBengaliText = isBengali(displayText)
+    val isHindiText = !isBengaliText && isDevanagari(displayText)
+
+    val heightAdjustedSp =
+      when {
+        isSpacebar -> baseFontSize.value
+        !isBengaliText && !isHindiText && displayText.length > 2 -> {
+          // Multi-char functional label ("?123", "ABC", "Search", "Done", "=\\<")
+          ENGLISH_LABEL_FONT_SIZE_SP * getFunctionalLabelControlledScale(heightScale) * fontDamping
+        }
+        codePointCount == 1 && Character.codePointAt(displayText, 0) > 0x1F000 -> {
+          // Emoji key ("😊")
+          16.5f * getFunctionalLabelControlledScale(heightScale) * fontDamping
+        }
+        else -> baseFontSize.value
+      }
+
+    // Calculate horizontal width-constrained ceiling (in sp) so text never clips horizontally
+    val maxWidthFittedSp =
+      when {
+        isSpacebar -> {
+          val avgGlyphWidthFactor = if (isBengaliText || isHindiText) 0.56f else 0.52f
+          (innerWidthDp / (codePointCount * avgGlyphWidthFactor)).coerceIn(9.5f, 15.5f) * fontDamping
+        }
+        displayText.length > 2 && !isBengaliText && !isHindiText -> {
+          // Functional labels ("?123", "ABC", "Search", "Done", "Send", "Next")
+          (innerWidthDp / (codePointCount * 0.60f)).coerceIn(9.0f, 15.0f) * fontDamping
+        }
+        isBengaliText -> {
+          // Single or compound Bengali character in 12-key or 9-key row
+          (innerWidthDp * 0.72f).coerceIn(11.0f, 21.0f) * fontDamping
+        }
+        else -> {
+          (innerWidthDp * 0.74f).coerceIn(11.0f, 23.0f) * fontDamping
+        }
+      }
+
+    val finalSp = minOf(heightAdjustedSp, maxWidthFittedSp).coerceAtLeast(8.5f)
+    return finalSp.sp
+  }
+
+  /**
+   * Width-aware secondary hint font size resolver for top-right key hints.
+   */
+  fun resolveResponsiveHintFontSize(
+    hintText: String,
+    heightScale: Float,
+    fontScale: Float = 1.0f,
+    allocatedKeyWidthDp: Float = 0f,
+  ): TextUnit {
+    val baseHint = resolveHintFontSize(hintText, heightScale, fontScale)
+    if (allocatedKeyWidthDp <= 0f) return baseHint
+    val fontDamping = getEffectiveFontScaleDamping(fontScale)
+    val widthCapSp = (allocatedKeyWidthDp * 0.34f).coerceIn(7.0f, 11.5f) * fontDamping
+    return minOf(baseHint.value, widthCapSp).coerceAtLeast(6.8f).sp
+  }
 }

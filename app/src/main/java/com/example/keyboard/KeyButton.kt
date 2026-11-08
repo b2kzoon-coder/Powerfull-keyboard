@@ -20,8 +20,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -66,6 +69,9 @@ private fun sanitizeDisplayLabel(label: String): String {
   return label.replace("\u25CC", "")
 }
 
+internal val debugMeasuredKeyBoundsInRoot =
+  java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.geometry.Rect>()
+
 @Composable
 fun KeyButton(
   spec: KeySpec,
@@ -78,6 +84,8 @@ fun KeyButton(
   onLongPressSecondary: ((String) -> Unit)? = null,
   rowHeightDp: Float = 50f,
   horizontalPaddingDp: Float = 1.8f,
+  allocatedKeyWidthDp: Float = 0f,
+  verticalPaddingDp: Float = -1f,
   modifier: Modifier = Modifier,
 ) {
   var isPressed by remember { mutableStateOf(false) }
@@ -153,14 +161,20 @@ fun KeyButton(
   val cornerRadius = (5.5f * heightScale).coerceIn(3.5f, 7.5f).dp
   val keyShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
   val fontSize =
-    remember(displayText, spec.role, heightScale, fontScale) {
-      KeyboardTypography.resolveFontSize(
+    remember(displayText, spec.role, heightScale, fontScale, allocatedKeyWidthDp, horizontalPaddingDp) {
+      KeyboardTypography.resolveResponsiveKeyFontSize(
         displayText = displayText,
         isSpacebar = spec.role == KeyRole.SPACEBAR,
         heightScale = heightScale,
         fontScale = fontScale,
+        allocatedKeyWidthDp = allocatedKeyWidthDp,
+        keyHorizontalPaddingDp = horizontalPaddingDp,
       )
     }
+
+  val resolvedVerticalPaddingDp =
+    if (verticalPaddingDp >= 0f) verticalPaddingDp
+    else (2.2f * heightScale).coerceIn(1.2f, 4.5f)
 
   Box(
     modifier =
@@ -168,10 +182,20 @@ fun KeyButton(
         .fillMaxHeight()
         .padding(
           horizontal = horizontalPaddingDp.dp,
-          vertical = (2.2f * heightScale).coerceIn(1.2f, 4.5f).dp,
+          vertical = resolvedVerticalPaddingDp.dp,
         )
         .clip(keyShape)
         .background(bgColor)
+        .onGloballyPositioned { coords ->
+          val pos = coords.localToRoot(Offset.Zero)
+          debugMeasuredKeyBoundsInRoot[spec.id] =
+            Rect(
+              left = pos.x,
+              top = pos.y,
+              right = pos.x + coords.size.width,
+              bottom = pos.y + coords.size.height,
+            )
+        }
         .semantics {
           role = Role.Button
           contentDescription = displayText
@@ -187,7 +211,8 @@ fun KeyButton(
           }
         }
         .pointerInput(spec.id) {
-          val horizontalSwipeThresholdPx = 38.dp.toPx()
+          val baseSwipeThresholdPx = 38.dp.toPx()
+          val minSwipeThresholdPx = 18.dp.toPx()
           val maxVerticalDriftPx = 28.dp.toPx()
 
           awaitEachGesture {
@@ -195,6 +220,12 @@ fun KeyButton(
             isPressed = true
 
             if (spec.role == KeyRole.SPACEBAR) {
+              val horizontalSwipeThresholdPx =
+                if (size.width > 0) {
+                  minOf(baseSwipeThresholdPx, size.width * 0.35f).coerceAtLeast(minSwipeThresholdPx)
+                } else {
+                  baseSwipeThresholdPx
+                }
               var swipeTriggered = false
               var cancelled = false
               val startX = down.position.x
@@ -300,9 +331,16 @@ fun KeyButton(
       if (spec.role == KeyRole.SPACEBAR) {
         val indicatorColor =
           remember(palette.keyTextSecondary) { palette.keyTextSecondary.copy(alpha = 0.5f) }
+        val indicatorWidthDp =
+          if (allocatedKeyWidthDp > 0f) {
+            minOf(28f * heightScale, allocatedKeyWidthDp * 0.45f).coerceAtLeast(14f)
+          } else {
+            28f * heightScale
+          }
         Column(
           horizontalAlignment = Alignment.CenterHorizontally,
           verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+          modifier = Modifier.padding(horizontal = 2.dp),
         ) {
           Text(
             text = displayText,
@@ -310,11 +348,14 @@ fun KeyButton(
             fontSize = fontSize,
             fontFamily = primaryFontFamily,
             style = BaseCenteredTextStyle,
+            maxLines = 1,
+            softWrap = false,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
           )
-          Spacer(modifier = Modifier.height((2f * heightScale).dp))
+          Spacer(modifier = Modifier.height((2f * heightScale).coerceIn(1f, 3f).dp))
           Box(
             modifier =
-              Modifier.width((28f * heightScale).dp)
+              Modifier.width(indicatorWidthDp.dp)
                 .height((1.5f * heightScale).coerceAtLeast(1f).dp)
                 .background(
                   indicatorColor,
@@ -358,8 +399,13 @@ fun KeyButton(
         }
       val isCombiningHint = remember(topRightHint) { isBengaliCombiningLabel(topRightHint) }
       val hintFontSize =
-        remember(topRightHint, heightScale, fontScale) {
-          KeyboardTypography.resolveHintFontSize(topRightHint, heightScale, fontScale)
+        remember(topRightHint, heightScale, fontScale, allocatedKeyWidthDp) {
+          KeyboardTypography.resolveResponsiveHintFontSize(
+            hintText = topRightHint,
+            heightScale = heightScale,
+            fontScale = fontScale,
+            allocatedKeyWidthDp = allocatedKeyWidthDp,
+          )
         }
       val hintFontFamily = if (isIndicHint) BengaliFontFamily else FontFamily.Default
       val hintScale =
@@ -368,21 +414,27 @@ fun KeyButton(
         } else {
           heightScale
         }
+      val isCompactKey = allocatedKeyWidthDp in 1f..30f
+      val hintTopPad = if (isCompactKey) (1.2f * hintScale).dp else (2f * hintScale).dp
+      val hintEndPad =
+        if (isCompactKey) (1.6f * hintScale).coerceAtLeast(1.2f).dp
+        else (3f * hintScale).coerceAtLeast(2.2f).dp
 
       Box(
         modifier =
           Modifier.align(Alignment.TopEnd)
             .padding(
-              top = (2f * hintScale).dp,
-              end = (3f * hintScale).coerceAtLeast(2.2f).dp,
+              top = hintTopPad,
+              end = hintEndPad,
             ),
       ) {
         if (isCombiningHint) {
+          val markBoxSize = if (isCompactKey) (9.5f * hintScale).dp else (11f * hintScale).dp
           BengaliCombiningMark(
             markString = topRightHint,
             color = palette.keyTextSecondary,
             fontSize = hintFontSize,
-            modifier = Modifier.size((11f * hintScale).dp),
+            modifier = Modifier.size(markBoxSize),
           )
         } else {
           Text(

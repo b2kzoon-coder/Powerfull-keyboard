@@ -12,6 +12,8 @@ import com.example.ime.ImeDiagnosticsLogger
 
 class VoicePermissionActivity : Activity() {
 
+  private var resultDelivered = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
@@ -27,6 +29,7 @@ class VoicePermissionActivity : Activity() {
     Log.d(TAG, "VoicePermissionActivity.onCreate: alreadyGranted=$granted")
 
     if (granted) {
+      resultDelivered = true
       deliverPermissionResult(true)
       finish()
       return
@@ -54,11 +57,12 @@ class VoicePermissionActivity : Activity() {
         details = "granted=$granted",
       )
       Log.d(TAG, "onRequestPermissionsResult: granted=$granted")
+      resultDelivered = true
 
       if (granted) {
         Toast.makeText(
             applicationContext,
-            "Microphone permission granted — tap mic to speak",
+            "Microphone permission granted — voice typing starting…",
             Toast.LENGTH_SHORT,
           )
           .show()
@@ -77,8 +81,11 @@ class VoicePermissionActivity : Activity() {
   }
 
   override fun onDestroy() {
-    if (isFinishing) {
-      clearPermissionCallback()
+    if (!resultDelivered) {
+      val granted =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+          PackageManager.PERMISSION_GRANTED
+      deliverPermissionResult(granted)
     }
     super.onDestroy()
   }
@@ -91,7 +98,15 @@ class VoicePermissionActivity : Activity() {
     fun deliverPermissionResult(granted: Boolean) {
       val callback = onPermissionResultCallback
       onPermissionResultCallback = null
-      callback?.invoke(granted)
+      callback?.let { cb ->
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+          cb(granted)
+        } else {
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            cb(granted)
+          }
+        }
+      }
     }
 
     fun clearPermissionCallback() {

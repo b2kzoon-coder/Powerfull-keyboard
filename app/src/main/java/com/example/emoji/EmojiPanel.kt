@@ -10,6 +10,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -52,6 +53,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -64,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.example.ime.ImeDiagnosticsLogger
+import com.example.keyboard.ResponsiveLayoutEngine
 import com.example.theme.KeyboardPalette
 import com.example.ui.theme.BengaliFontFamily
 import kotlinx.coroutines.delay
@@ -265,7 +268,7 @@ fun EmojiPanel(
     }
   }
 
-  Box(
+  BoxWithConstraints(
     modifier =
       modifier
         .fillMaxWidth()
@@ -274,6 +277,18 @@ fun EmojiPanel(
         .background(palette.keyboardBackground)
         .testTag("emoji_panel"),
   ) {
+    val density = LocalDensity.current
+    val availableWidthDp =
+      ResponsiveLayoutEngine.resolveAvailableWidthDp(
+        constraints = constraints,
+        density = density,
+        fallbackWidthDp = maxWidth.value,
+      )
+    val gridColumns = ResponsiveLayoutEngine.computeEmojiGridColumns(availableWidthDp)
+    val isCompactHeight = panelHeight < 185.dp || activeSearchFocused
+    val returnButtonWidth = if (availableWidthDp < 330f) 44.dp else 52.dp
+    val backspaceButtonWidth = if (availableWidthDp < 330f) 42.dp else 48.dp
+
     Column(
       modifier =
         Modifier.fillMaxSize()
@@ -285,13 +300,16 @@ fun EmojiPanel(
           Modifier.fillMaxWidth()
             .focusProperties { canFocus = false }
             .background(palette.toolbarBackground)
-            .padding(horizontal = 8.dp, vertical = if (activeSearchFocused) 3.dp else 4.dp),
+            .padding(
+              horizontal = if (availableWidthDp < 330f) 6.dp else 8.dp,
+              vertical = if (isCompactHeight) 2.5.dp else 4.dp,
+            ),
       ) {
         // Search Bar Row
         Row(
           modifier =
             Modifier.fillMaxWidth()
-              .height(if (activeSearchFocused) 30.dp else 34.dp)
+              .height(if (isCompactHeight) 30.dp else 34.dp)
               .focusProperties { canFocus = false }
               .clip(RoundedCornerShape(8.dp))
               .background(palette.keyBackground)
@@ -527,7 +545,7 @@ fun EmojiPanel(
           Modifier.weight(1f)
             .fillMaxWidth()
             .focusProperties { canFocus = false }
-            .padding(horizontal = 4.dp),
+            .padding(horizontal = if (availableWidthDp < 330f) 2.dp else 4.dp),
       ) {
         if (displayedEmojis.isEmpty()) {
           Box(
@@ -549,9 +567,9 @@ fun EmojiPanel(
         } else {
           LazyVerticalGrid(
             state = gridState,
-            columns = GridCells.Fixed(8),
+            columns = GridCells.Fixed(gridColumns),
             contentPadding =
-              PaddingValues(horizontal = 2.dp, vertical = if (activeSearchFocused) 2.dp else 4.dp),
+              PaddingValues(horizontal = 2.dp, vertical = if (isCompactHeight) 2.dp else 4.dp),
             modifier =
               Modifier.fillMaxSize()
                 .focusProperties { canFocus = false }
@@ -564,7 +582,7 @@ fun EmojiPanel(
             ) { emoji ->
               EmojiGridCell(
                 emoji = emoji,
-                isCompact = activeSearchFocused,
+                isCompact = isCompactHeight,
                 onSelectEmoji = handleSelectEmoji,
                 onLongPressSkinTone = handleLongPressSkinTone,
               )
@@ -615,18 +633,18 @@ fun EmojiPanel(
         Row(
           modifier =
             Modifier.fillMaxWidth()
-              .height(44.dp)
+              .height(if (panelHeight < 185.dp) 38.dp else 44.dp)
               .focusProperties { canFocus = false }
               .background(palette.toolbarBackground)
-              .padding(horizontal = 4.dp),
+              .padding(horizontal = if (availableWidthDp < 330f) 2.dp else 4.dp),
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.SpaceBetween,
         ) {
           // Return to keyboard button ("ABC" or "বাং")
           Box(
             modifier =
-              Modifier.width(52.dp)
-                .height(36.dp)
+              Modifier.width(returnButtonWidth)
+                .height(if (panelHeight < 185.dp) 32.dp else 36.dp)
                 .focusProperties { canFocus = false }
                 .clip(RoundedCornerShape(6.dp))
                 .background(palette.functionalKeyBackground)
@@ -648,6 +666,7 @@ fun EmojiPanel(
               color = palette.keyTextPrimary,
               fontSize = 13.5.sp,
               fontWeight = FontWeight.Bold,
+              maxLines = 1,
             )
           }
 
@@ -666,7 +685,7 @@ fun EmojiPanel(
               val isSelected = !isSearching && category == selectedCategory
               Box(
                 modifier =
-                  Modifier.size(36.dp)
+                  Modifier.size(if (availableWidthDp < 330f) 32.dp else 36.dp)
                     .focusProperties { canFocus = false }
                     .clip(RoundedCornerShape(6.dp))
                     .background(
@@ -704,8 +723,8 @@ fun EmojiPanel(
           // Backspace button with repeat support
           Box(
             modifier =
-              Modifier.width(48.dp)
-                .height(36.dp)
+              Modifier.width(backspaceButtonWidth)
+                .height(if (panelHeight < 185.dp) 32.dp else 36.dp)
                 .focusProperties { canFocus = false }
                 .clip(RoundedCornerShape(6.dp))
                 .background(palette.functionalKeyBackground)
@@ -735,6 +754,7 @@ fun EmojiPanel(
               color = palette.keyTextPrimary,
               fontSize = 17.sp,
               fontWeight = FontWeight.SemiBold,
+              maxLines = 1,
             )
           }
         }

@@ -8,10 +8,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
@@ -27,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.clipboard.ClipboardEntry
@@ -52,6 +58,9 @@ import com.example.voice.VoiceLanguage
 import com.example.voice.VoiceUiState
 
 internal var debugRootRecompositionCount: Int = 0
+internal var debugMeasuredSurfaceWidthPx: Int = 0
+internal var debugMeasuredSurfaceHeightPx: Int = 0
+internal var debugMeasuredRowsContainerWidthPx: Int = 0
 
 @Composable
 fun KeyboardSurface(
@@ -316,29 +325,64 @@ fun KeyboardSurface(
       if (isLandscape) 92.dp else 112.dp,
     )
 
+  val activeEnterActionForLayout =
+    if (isEmojiSearchActive) {
+      EnterActionType.SEARCH
+    } else {
+      enterActionType
+    }
+
+  val density = LocalDensity.current
+
   BoxWithConstraints(
     modifier =
       modifier
         .fillMaxWidth()
         .focusProperties { canFocus = false }
         .background(palette.keyboardBackground)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(
+          WindowInsets.navigationBars
+            .union(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+        )
+        .onGloballyPositioned { coords ->
+          debugMeasuredSurfaceWidthPx = coords.size.width
+          debugMeasuredSurfaceHeightPx = coords.size.height
+        }
         .testTag("keyboard_surface"),
     contentAlignment = Alignment.BottomCenter,
   ) {
-    val maxKeyboardWidth =
-      if (maxWidth > 600.dp) {
-        580.dp.coerceAtMost(maxWidth * 0.85f)
-      } else {
-        maxWidth
+    val availableParentWidthDp =
+      ResponsiveLayoutEngine.resolveAvailableWidthDp(
+        constraints = constraints,
+        density = density,
+        fallbackWidthDp = maxWidth.value,
+      )
+    val responsiveMetrics =
+      remember(
+        availableParentWidthDp,
+        isLandscape,
+        portraitHeightPercent,
+        landscapeHeightPercent,
+        isCompactKeyboardActive,
+        mode,
+        activeLanguageKind,
+        activeEnterActionForLayout,
+        layoutSpec,
+      ) {
+        ResponsiveLayoutEngine.computeKeyboardMetrics(
+          availableParentWidthDp = availableParentWidthDp,
+          isLandscape = isLandscape,
+          portraitHeightPercent = portraitHeightPercent,
+          landscapeHeightPercent = landscapeHeightPercent,
+          isCompactSearchMode = isCompactKeyboardActive,
+          mode = mode,
+          languageKind = activeLanguageKind,
+          enterActionType = activeEnterActionForLayout,
+          rows = layoutSpec.rows,
+        )
       }
-
-    val isNarrowScreen = maxKeyboardWidth < 360.dp
-    val isVeryNarrowScreen = maxKeyboardWidth < 330.dp
-    val keyHorizontalPaddingDp =
-      if (isVeryNarrowScreen) 1.0f
-      else if (isNarrowScreen) 1.4f
-      else 1.8f
+    val maxKeyboardWidth = responsiveMetrics.maxKeyboardWidthDp.dp
 
     Column(
       modifier =
@@ -464,22 +508,22 @@ fun KeyboardSurface(
           Column(
             modifier =
               Modifier.fillMaxWidth()
-                .padding(horizontal = 2.dp, vertical = activeContainerVerticalPadding)
+                .padding(
+                  horizontal = responsiveMetrics.containerHorizontalPaddingDp.dp,
+                  vertical = activeContainerVerticalPadding,
+                )
                 .focusProperties { canFocus = false }
+                .onGloballyPositioned { coords ->
+                  debugMeasuredRowsContainerWidthPx = coords.size.width
+                }
                 .testTag("keyboard_rows_container"),
           ) {
-            layoutSpec.rows.forEach { rowKeys ->
-              val isNineKeyRow =
-                (mode == KeyboardMode.ALPHABET || mode == KeyboardMode.EMOJI) && rowKeys.size == 9
-              val rowHorizontalPadding =
-                if (isNineKeyRow) {
-                  val factor =
-                    if (activeLanguageKind == LanguageInputMethodKind.DIRECT_BANGLA_PROBHAT) 0.042f
-                    else 0.05f
-                  (maxKeyboardWidth * factor).coerceIn(8.dp, 28.dp)
-                } else {
-                  0.dp
-                }
+            layoutSpec.rows.forEachIndexed { rowIdx, rowKeys ->
+              val rowLayout = responsiveMetrics.rows.getOrNull(rowIdx)
+              val rowHorizontalPadding = (rowLayout?.sideIndentationDp ?: 0f).dp
+              val rowKeyPadH = rowLayout?.keyHorizontalPaddingDp ?: responsiveMetrics.baseKeyHorizontalPaddingDp
+              val rowKeyPadV = rowLayout?.keyVerticalPaddingDp ?: -1f
+
               Row(
                 modifier =
                   Modifier.fillMaxWidth()
@@ -489,7 +533,12 @@ fun KeyboardSurface(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
               ) {
-                rowKeys.forEach { keySpec ->
+                rowKeys.forEachIndexed { keyIdx, keySpec ->
+                  val effectiveWeight =
+                    rowLayout?.effectiveWeights?.getOrNull(keyIdx) ?: keySpec.weight
+                  val allocatedKeyWidthDp =
+                    rowLayout?.allocatedKeyWidthsDp?.getOrNull(keyIdx) ?: 0f
+
                   androidx.compose.runtime.key(keySpec.id) {
                     val isShiftDependent =
                       keySpec.action is KeyAction.Shift ||
@@ -511,8 +560,10 @@ fun KeyboardSurface(
                       onLongPressSecondary =
                         if (keySpec.secondaryHint != null) handleLongPressSecondary else null,
                       rowHeightDp = activeRowHeightDp,
-                      horizontalPaddingDp = keyHorizontalPaddingDp,
-                      modifier = Modifier.weight(keySpec.weight).focusProperties { canFocus = false },
+                      horizontalPaddingDp = rowKeyPadH,
+                      allocatedKeyWidthDp = allocatedKeyWidthDp,
+                      verticalPaddingDp = rowKeyPadV,
+                      modifier = Modifier.weight(effectiveWeight).focusProperties { canFocus = false },
                     )
                   }
                 }

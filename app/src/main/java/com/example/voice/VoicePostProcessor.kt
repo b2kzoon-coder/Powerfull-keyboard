@@ -24,11 +24,12 @@ import java.util.Locale
  */
 object VoicePostProcessor {
 
-  // Bengali question interrogatives & particles
+  // Bengali question interrogatives & particles (including conversational Bangladesh Bengali)
   private val BENGALI_INTERROGATIVES = setOf(
-    "কি", "কী", "কেন", "কোথায়", "কোথায়", "কখন", "কিভাবে", "কীভাবে",
-    "কেমন", "কার", "কাকে", "কাদের", "কোন", "কোনটা", "কোনটি", "নাকি",
-    "কিনা", "কত", "কয়টা", "কয়টা", "কে", "কারা",
+    "কি", "কী", "কেন", "ক্যান", "কোথায়", "কোথায়", "কই", "কখন", "কবে",
+    "কিভাবে", "কীভাবে", "কেমনে", "কেমন", "কার", "কাকে", "কাদের", "কোন",
+    "কোনটা", "কোনটি", "কোনখানে", "কিসে", "কিসের", "নাকি", "কিনা", "কত",
+    "কয়", "কয়", "কয়টা", "কয়টা", "কয়টায়", "কয়টায়", "কে", "কারা",
   )
 
   // English question starters & auxiliary verbs
@@ -54,6 +55,7 @@ object VoicePostProcessor {
   private val RE_SPACE_BEFORE_PUNCT = Regex("\\s+([.,!?:;|।])")
   private val RE_MISSING_SPACE_AFTER_PUNCT = Regex("([.,!?:;|।])(?=[^\\s.,!?:;|।\\d])")
   private val RE_DUPLICATE_PUNCT = Regex("([.,!?:;|।])\\1+")
+  private val RE_DUPLICATE_BENGALI_KAR = Regex("([\\u09BE-\\u09CC\\u09D7])\\1+")
   private val RE_BN_EN_BOUNDARY_1 = Regex("([\\u0980-\\u09FF])([a-zA-Z])")
   private val RE_BN_EN_BOUNDARY_2 = Regex("([a-zA-Z])([\\u0980-\\u09FF])")
 
@@ -74,28 +76,87 @@ object VoicePostProcessor {
     val trimmed = rawText.trim()
     if (trimmed.isEmpty()) return ""
 
-    // 1. Normalize code-switching boundaries between Bengali script and Latin text
-    var text = normalizeCodeSwitching(trimmed)
+    // 1. Conservative Bengali Unicode normalization (canonical nukta consonants, split kars, stray artifacts)
+    var text = if (containsBengali(trimmed)) normalizeBengaliUnicode(trimmed) else trimmed
 
-    // 2. Format punctuation spacing and deduplicate marks
+    // 2. Normalize code-switching boundaries between Bengali script and Latin text
+    text = normalizeCodeSwitching(text)
+
+    // 3. Format punctuation spacing and deduplicate marks
     text = normalizePunctuationSpacing(text)
 
-    // 3. For Banglish mode, transliterate Bengali segments into clean Romanized text
+    // 4. For Banglish mode, transliterate Bengali segments into clean Romanized text
     if (language.isBanglishOutput) {
       text = BanglishTransliterator.transliterate(text)
     }
 
-    // 4. Intelligent punctuation on final results (when requested / enabled)
+    // 5. Intelligent punctuation on final results (when requested / enabled)
     if (isFinal && autoPunctuate) {
       text = applyIntelligentPunctuation(text, language)
     }
 
-    // 5. Auto-capitalization for Latin text (English and Banglish)
+    // 6. Auto-capitalization for Latin text (English and Banglish)
     if (language.isBanglishOutput || language.tag.startsWith("en", ignoreCase = true)) {
       text = applyAutoCapitalization(text)
     }
 
     return text.trim()
+  }
+
+  /**
+   * Applies conservative, non-destructive Bengali Unicode normalization:
+   * - Composes decomposed nukta pairs (ড+় -> ড়, ঢ+় -> ঢ়, য+় -> য়)
+   * - Composes split two-part vowel signs (ে+া -> ো, ে+ৗ -> ৌ)
+   * - Removes stray dotted circles (\u25CC) and zero-width spaces (\u200B, \uFEFF) while preserving ZWNJ/ZWJ
+   * - Collapses accidental duplicated consecutive dependent vowel signs (কার)
+   * Never alters lexical choice or replaces words.
+   */
+  fun normalizeBengaliUnicode(text: String): String {
+    if (text.isEmpty()) return text
+    val sb = StringBuilder(text.length)
+    var i = 0
+    while (i < text.length) {
+      val c = text[i]
+      if (c == '\u25CC' || c == '\u200B' || c == '\uFEFF') {
+        i++
+        continue
+      }
+      if (i + 1 < text.length) {
+        val next = text[i + 1]
+        if (next == '\u09BC') {
+          when (c) {
+            '\u09A1' -> {
+              sb.append('\u09DC') // ড়
+              i += 2
+              continue
+            }
+            '\u09A2' -> {
+              sb.append('\u09DD') // ঢ়
+              i += 2
+              continue
+            }
+            '\u09AF' -> {
+              sb.append('\u09DF') // য়
+              i += 2
+              continue
+            }
+          }
+        } else if (c == '\u09C7') {
+          if (next == '\u09BE') {
+            sb.append('\u09CB') // ো
+            i += 2
+            continue
+          } else if (next == '\u09D7') {
+            sb.append('\u09CC') // ৌ
+            i += 2
+            continue
+          }
+        }
+      }
+      sb.append(c)
+      i++
+    }
+    return RE_DUPLICATE_BENGALI_KAR.replace(sb.toString(), "$1")
   }
 
   /**
@@ -204,8 +265,11 @@ object VoicePostProcessor {
       if (ENGLISH_QUESTION_STARTERS.contains(firstWord)) {
         return true
       }
-      // Common Banglish question words
-      val banglishInterrogatives = setOf("ki", "kemon", "kothay", "keno", "kokhon", "kivabe", "kar", "konta", "naki")
+      // Common Banglish question words (including conversational Bangladesh Bengali)
+      val banglishInterrogatives = setOf(
+        "ki", "kemon", "kemne", "kothay", "koi", "keno", "kokhon", "kobe",
+        "kivabe", "kar", "konta", "kise", "kiser", "naki",
+      )
       if (latinWords.any { banglishInterrogatives.contains(it.trim('?', '!', '.', ',')) }) {
         return true
       }
@@ -237,7 +301,57 @@ object VoicePostProcessor {
     return String(chars)
   }
 
-  private fun containsBengali(text: String): Boolean {
+  /**
+   * Computes Word Error Rate (WER) between a reference transcript and a recognized hypothesis.
+   * Strips terminal punctuation for fair lexical comparison and normalizes Bengali Unicode.
+   */
+  fun calculateWordErrorRate(reference: String, hypothesis: String): Double {
+    val refWords = tokenizeForEvaluation(reference)
+    val hypWords = tokenizeForEvaluation(hypothesis)
+    if (refWords.isEmpty()) return if (hypWords.isEmpty()) 0.0 else 1.0
+    val distance = levenshteinDistance(refWords, hypWords)
+    return distance.toDouble() / refWords.size.toDouble()
+  }
+
+  /**
+   * Computes Character Error Rate (CER) between a reference transcript and a recognized hypothesis.
+   */
+  fun calculateCharacterErrorRate(reference: String, hypothesis: String): Double {
+    val normRef = normalizeBengaliUnicode(reference.trim()).replace(RE_MULTIPLE_SPACES, " ")
+    val normHyp = normalizeBengaliUnicode(hypothesis.trim()).replace(RE_MULTIPLE_SPACES, " ")
+    if (normRef.isEmpty()) return if (normHyp.isEmpty()) 0.0 else 1.0
+    val refChars = normRef.map { it.toString() }
+    val hypChars = normHyp.map { it.toString() }
+    val distance = levenshteinDistance(refChars, hypChars)
+    return distance.toDouble() / refChars.size.toDouble()
+  }
+
+  private fun tokenizeForEvaluation(text: String): List<String> {
+    val normalized = normalizeBengaliUnicode(text.trim())
+    return normalized
+      .split(Regex("[\\s.,!?:;|।॥]+"))
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+  }
+
+  private fun <T> levenshteinDistance(a: List<T>, b: List<T>): Int {
+    val m = a.size
+    val n = b.size
+    val dp = IntArray(n + 1) { it }
+    for (i in 1..m) {
+      var prev = dp[0]
+      dp[0] = i
+      for (j in 1..n) {
+        val temp = dp[j]
+        val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+        dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prev + cost)
+        prev = temp
+      }
+    }
+    return dp[n]
+  }
+
+  internal fun containsBengali(text: String): Boolean {
     for (ch in text) {
       if (ch.code in 0x0980..0x09FF) return true
     }

@@ -29,11 +29,21 @@ data class AudioProcessingInfo(
   val isNoiseSuppressorActive: Boolean = false,
   val isAcousticEchoCancelerActive: Boolean = false,
   val isAutomaticGainControlActive: Boolean = false,
+  val activeSessionId: Int = 0,
 ) {
   val hasHardwareEffects: Boolean
     get() = isNoiseSuppressorAvailable || isAcousticEchoCancelerAvailable || isAutomaticGainControlAvailable
   val hasActiveEffects: Boolean
     get() = isNoiseSuppressorActive || isAcousticEchoCancelerActive || isAutomaticGainControlActive
+  val isSupportedOnDevice: Boolean
+    get() = isNoiseSuppressorAvailable || isAcousticEchoCancelerAvailable
+
+  val statusDescription: String
+    get() = when {
+      hasActiveEffects -> "Active (session $activeSessionId: NS=$isNoiseSuppressorActive, AEC=$isAcousticEchoCancelerActive, AGC=$isAutomaticGainControlActive)"
+      hasHardwareEffects -> "Supported (Idle)"
+      else -> "Hardware DSP Not Available"
+    }
 }
 
 @Immutable

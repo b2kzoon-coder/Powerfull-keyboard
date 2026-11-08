@@ -23,6 +23,10 @@ object BanglishTransliterator {
       "তোমার" to "tomar",
       "তোমাকে" to "tomake",
       "তোমাদের" to "tomader",
+      "তুই" to "tui",
+      "তোর" to "tor",
+      "তোকে" to "toke",
+      "তোরা" to "tora",
       "আপনি" to "apni",
       "আপনার" to "apnar",
       "আপনাকে" to "apnake",
@@ -33,7 +37,9 @@ object BanglishTransliterator {
       "তারা" to "tara",
       "তাদের" to "tader",
       "কেমন" to "kemon",
+      "কেমনে" to "kemne",
       "আছো" to "acho",
+      "আছিস" to "achis",
       "আছেন" to "achen",
       "আছি" to "achi",
       "আছে" to "ache",
@@ -45,7 +51,9 @@ object BanglishTransliterator {
       "কি" to "ki",
       "কোথায়" to "kothay",
       "কোথায়" to "kothay",
+      "কই" to "koi",
       "যাচ্ছো" to "jaccho",
+      "যাচ্ছিস" to "jacchis",
       "যাচ্ছেন" to "jacchen",
       "যাচ্ছি" to "jacchi",
       "যাচ্ছে" to "jacche",
@@ -464,6 +472,9 @@ object BanglishTransliterator {
       if (isCluster || prevConsonant == 'হ') {
         out.append('o')
       }
+    } else if (!isCluster && index >= 2 && isClosedStemBeforeProgressiveSuffix(word, index)) {
+      // Closed verb stem before progressive suffixes (-তেছি, -তেছিলি, -তেছিস, -তেছে, -তেছো, -তেছিল, -তেছেন),
+      // e.g., মারতেছিলি -> martechili, করতেছি -> kortechi, বলতেছি -> boltechi
     } else {
       // Internal syllable inherent vowel
       val inherent = chooseInherentVowel(word, index, prevConsonant)
@@ -471,6 +482,22 @@ object BanglishTransliterator {
     }
     return index
   }
+
+  private fun isClosedStemBeforeProgressiveSuffix(word: String, index: Int): Boolean {
+    val remaining = lengthRemaining(word, index)
+    if (remaining < 4) return false
+    if (word[index] != 'ত' || word[index + 1] != 'ে' || word[index + 2] != 'ছ') return false
+    val tail = word.substring(index)
+    return tail.startsWith("তেছিলি") ||
+      tail.startsWith("তেছিল") ||
+      tail.startsWith("তেছিস") ||
+      tail.startsWith("তেছি") ||
+      tail.startsWith("তেছো") ||
+      tail.startsWith("তেছে") ||
+      tail.startsWith("তেছেন")
+  }
+
+  private fun lengthRemaining(word: String, index: Int): Int = word.length - index
 
   private fun chooseInherentVowel(word: String, nextIndex: Int, prevConsonant: Char): Char {
     if (prevConsonant == 'য়') return 'e'

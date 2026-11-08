@@ -113,197 +113,198 @@ fun KeyboardToolbar(
           .height(height)
           .focusProperties { canFocus = false }
           .background(palette.toolbarBackground)
-          .padding(horizontal = 4.dp)
           .testTag("keyboard_toolbar"),
     ) {
-    val availableWidth = with(density) { constraints.maxWidth.toDp() }
-    val isUltraNarrow = availableWidth < 325.dp
-    val isCompact = availableWidth < 345.dp
-    val isNarrow = availableWidth < 395.dp
-    val buttonPaddingH =
-      when {
-        isUltraNarrow -> 3.5.dp
-        isCompact -> 4.dp
-        isNarrow -> 5.dp
-        else -> 6.5.dp
-      }
-    val itemSpacing =
-      when {
-        isUltraNarrow -> 1.5.dp
-        isCompact -> 1.5.dp
-        isNarrow -> 2.dp
-        else -> 3.dp
-      }
-    val showCursorArrows = !isUltraNarrow
+      val availableWidthDp =
+        com.example.keyboard.ResponsiveLayoutEngine.resolveAvailableWidthDp(
+          constraints = constraints,
+          density = density,
+          fallbackWidthDp = maxWidth.value,
+        )
+      val toolbarMetrics =
+        com.example.keyboard.ResponsiveLayoutEngine.computeToolbarMetrics(availableWidthDp)
+      val buttonPaddingH = toolbarMetrics.buttonPaddingH
+      val itemSpacing = toolbarMetrics.itemSpacing
+      val showCursorArrows = toolbarMetrics.showCursorArrows
 
-    androidx.compose.runtime.CompositionLocalProvider(LocalDensity provides density) {
-      Row(
-        modifier = Modifier.fillMaxWidth().fillMaxHeight().focusProperties { canFocus = false },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
-      // Weighted left action row: measured AFTER the unweighted right action cluster so that
-      // wider language badges (e.g., Bangla Probhat "প্রভাত") never starve or shrink the
-      // far-right microphone button across any screen width, density, or font scale.
-      Row(
-        modifier =
-          Modifier.weight(1f, fill = false)
-            .fillMaxHeight()
-            .focusProperties { canFocus = false },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(itemSpacing),
-      ) {
-        // Language selector badge pill - opens language selection panel
+      androidx.compose.runtime.CompositionLocalProvider(LocalDensity provides density) {
         Row(
           modifier =
-            Modifier.widthIn(min = 42.dp, max = if (isCompact) 68.dp else 78.dp)
-              .focusProperties { canFocus = false }
-              .clip(ToolbarButtonCornerShape)
-              .background(
-                if (isLanguageSelectorOpen) palette.accentKeyBackground else palette.keyBackground
-              )
-              .clickable(onClick = onOpenLanguageSelector)
-              .padding(horizontal = buttonPaddingH, vertical = 4.dp)
-              .testTag("toolbar_language_badge"),
+            Modifier.fillMaxWidth()
+              .fillMaxHeight()
+              .padding(horizontal = toolbarMetrics.horizontalContainerPaddingDp)
+              .focusProperties { canFocus = false },
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(2.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-          Icon(
-            imageVector = Icons.Outlined.Language,
-            contentDescription = stringResource(R.string.cd_language_selector),
-            tint = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
-            modifier = Modifier.requiredSize(13.dp),
-          )
-          Text(
-            text = activeLanguageBadge,
-            color = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
-            fontSize = badgeFontSize,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Clip,
-          )
-          Icon(
-            imageVector = Icons.Filled.ArrowDropDown,
-            contentDescription = null,
-            tint = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
-            modifier = Modifier.requiredSize(13.dp),
-          )
-        }
-
-        // Number Row Quick Toggle
-        Box(
-          modifier =
-            Modifier.focusProperties { canFocus = false }
-              .clip(ToolbarButtonCornerShape)
-              .background(
-                if (showNumberRow) palette.accentKeyBackground else palette.keyBackground
+          // Weighted left action row: measured AFTER the unweighted right action cluster so that
+          // wider language badges (e.g., Bangla Probhat "প্রভাত") never starve or shrink the
+          // far-right microphone button across any screen width, density, or font scale.
+          Row(
+            modifier =
+              Modifier.weight(1f, fill = false)
+                .fillMaxHeight()
+                .focusProperties { canFocus = false },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(itemSpacing),
+          ) {
+            // Language selector badge pill - opens language selection panel
+            Row(
+              modifier =
+                Modifier.widthIn(
+                  min = toolbarMetrics.badgeMinWidth,
+                  max = toolbarMetrics.badgeMaxWidth,
+                )
+                  .focusProperties { canFocus = false }
+                  .clip(ToolbarButtonCornerShape)
+                  .background(
+                    if (isLanguageSelectorOpen) palette.accentKeyBackground else palette.keyBackground
+                  )
+                  .clickable(onClick = onOpenLanguageSelector)
+                  .padding(horizontal = buttonPaddingH, vertical = 4.dp)
+                  .testTag("toolbar_language_badge"),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Language,
+                contentDescription = stringResource(R.string.cd_language_selector),
+                tint = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
+                modifier = Modifier.requiredSize(13.dp),
               )
-              .clickable(onClick = onToggleNumberRow)
-              .padding(horizontal = (buttonPaddingH + 1.dp), vertical = 4.dp)
-              .testTag("toolbar_number_row_toggle"),
-          contentAlignment = Alignment.Center,
-        ) {
-          Text(
-            text = "123",
-            color = if (showNumberRow) palette.accentKeyText else palette.keyTextSecondary,
-            fontSize = badgeFontSize,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            softWrap = false,
-          )
-        }
-
-        // Emoji quick toggle button
-        Box(
-          modifier =
-            Modifier.focusProperties { canFocus = false }
-              .clip(ToolbarButtonCornerShape)
-              .background(
-                if (isEmojiOpen) palette.accentKeyBackground else palette.keyBackground
+              Text(
+                text = activeLanguageBadge,
+                color = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
+                fontSize = badgeFontSize,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
               )
-              .clickable(onClick = onToggleEmoji)
-              .padding(horizontal = buttonPaddingH, vertical = 4.dp)
-              .testTag("toolbar_emoji_button"),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            imageVector = Icons.Outlined.Mood,
-            contentDescription = stringResource(R.string.cd_open_emoji),
-            tint = if (isEmojiOpen) palette.accentKeyText else palette.keyTextPrimary,
-            modifier = Modifier.requiredSize(15.dp),
-          )
-        }
-
-        // Clipboard button
-        Row(
-          modifier =
-            Modifier.focusProperties { canFocus = false }
-              .clip(ToolbarButtonCornerShape)
-              .background(
-                if (isClipboardOpen) palette.accentKeyBackground else palette.keyBackground
+              Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                tint = if (isLanguageSelectorOpen) palette.accentKeyText else palette.accentKeyBackground,
+                modifier = Modifier.requiredSize(13.dp),
               )
-              .clickable(onClick = onToggleClipboard)
-              .padding(horizontal = (buttonPaddingH + 1.dp), vertical = 4.dp)
-              .testTag("toolbar_clipboard_button"),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Outlined.ContentPaste,
-            contentDescription = stringResource(R.string.cd_open_clipboard),
-            tint = if (isClipboardOpen) palette.accentKeyText else palette.keyTextPrimary,
-            modifier = Modifier.requiredSize(15.dp),
-          )
-          if (clipboardCount > 0) {
-            Text(
-              text = clipboardCount.toString(),
-              color = if (isClipboardOpen) palette.accentKeyText else palette.keyTextSecondary,
-              fontSize = badgeFontSize,
-              fontWeight = FontWeight.SemiBold,
-              maxLines = 1,
-              softWrap = false,
-            )
+            }
+
+            // Number Row Quick Toggle
+            Box(
+              modifier =
+                Modifier.focusProperties { canFocus = false }
+                  .clip(ToolbarButtonCornerShape)
+                  .background(
+                    if (showNumberRow) palette.accentKeyBackground else palette.keyBackground
+                  )
+                  .clickable(onClick = onToggleNumberRow)
+                  .padding(horizontal = (buttonPaddingH + 0.5.dp), vertical = 4.dp)
+                  .testTag("toolbar_number_row_toggle"),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                text = "123",
+                color = if (showNumberRow) palette.accentKeyText else palette.keyTextSecondary,
+                fontSize = badgeFontSize,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+              )
+            }
+
+            // Emoji quick toggle button
+            Box(
+              modifier =
+                Modifier.focusProperties { canFocus = false }
+                  .clip(ToolbarButtonCornerShape)
+                  .background(
+                    if (isEmojiOpen) palette.accentKeyBackground else palette.keyBackground
+                  )
+                  .clickable(onClick = onToggleEmoji)
+                  .padding(horizontal = buttonPaddingH, vertical = 4.dp)
+                  .testTag("toolbar_emoji_button"),
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Mood,
+                contentDescription = stringResource(R.string.cd_open_emoji),
+                tint = if (isEmojiOpen) palette.accentKeyText else palette.keyTextPrimary,
+                modifier = Modifier.requiredSize(toolbarMetrics.leftIconSize),
+              )
+            }
+
+            // Clipboard button
+            Row(
+              modifier =
+                Modifier.focusProperties { canFocus = false }
+                  .clip(ToolbarButtonCornerShape)
+                  .background(
+                    if (isClipboardOpen) palette.accentKeyBackground else palette.keyBackground
+                  )
+                  .clickable(onClick = onToggleClipboard)
+                  .padding(horizontal = (buttonPaddingH + 0.5.dp), vertical = 4.dp)
+                  .testTag("toolbar_clipboard_button"),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(2.5.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.ContentPaste,
+                contentDescription = stringResource(R.string.cd_open_clipboard),
+                tint = if (isClipboardOpen) palette.accentKeyText else palette.keyTextPrimary,
+                modifier = Modifier.requiredSize(toolbarMetrics.leftIconSize),
+              )
+              if (clipboardCount > 0) {
+                Text(
+                  text = clipboardCount.toString(),
+                  color = if (isClipboardOpen) palette.accentKeyText else palette.keyTextSecondary,
+                  fontSize = badgeFontSize,
+                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 1,
+                  softWrap = false,
+                )
+              }
+            }
+
+            // Translator button
+            Box(
+              modifier =
+                Modifier.focusProperties { canFocus = false }
+                  .clip(ToolbarButtonCornerShape)
+                  .background(
+                    if (isTranslatorOpen) palette.accentKeyBackground else palette.keyBackground
+                  )
+                  .clickable(onClick = onToggleTranslator)
+                  .padding(horizontal = buttonPaddingH, vertical = 4.dp)
+                  .testTag("toolbar_translate_button"),
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(
+                imageVector = Icons.Default.Translate,
+                contentDescription = stringResource(R.string.cd_translate),
+                tint = if (isTranslatorOpen) palette.accentKeyText else palette.keyTextPrimary,
+                modifier = Modifier.requiredSize(toolbarMetrics.leftIconSize),
+              )
+            }
           }
-        }
 
-        // Translator button
-        Box(
-          modifier =
-            Modifier.focusProperties { canFocus = false }
-              .clip(ToolbarButtonCornerShape)
-              .background(
-                if (isTranslatorOpen) palette.accentKeyBackground else palette.keyBackground
-              )
-              .clickable(onClick = onToggleTranslator)
-              .padding(horizontal = buttonPaddingH, vertical = 4.dp)
-              .testTag("toolbar_translate_button"),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            imageVector = Icons.Default.Translate,
-            contentDescription = stringResource(R.string.cd_translate),
-            tint = if (isTranslatorOpen) palette.accentKeyText else palette.keyTextPrimary,
-            modifier = Modifier.requiredSize(15.dp),
+          ToolbarVoiceAndRightActions(
+            palette = palette,
+            isVoiceTypingOpen = isVoiceTypingOpen,
+            voiceListeningState = voiceListeningState,
+            voiceRmsScaleState = voiceRmsScaleState,
+            onToggleVoiceTyping = onToggleVoiceTyping,
+            onMoveCursorLeft = onMoveCursorLeft,
+            onMoveCursorRight = onMoveCursorRight,
+            onCycleTheme = onCycleTheme,
+            onOpenSettings = onOpenSettings,
+            showCursorArrows = showCursorArrows,
+            buttonPaddingH = buttonPaddingH,
+            rightClusterSpacing = toolbarMetrics.rightClusterSpacing,
+            rightArrowIconSize = toolbarMetrics.rightArrowIconSize,
+            rightActionIconSize = toolbarMetrics.rightActionIconSize,
+            badgeFontSize = badgeFontSize,
           )
         }
-      }
-
-      ToolbarVoiceAndRightActions(
-        palette = palette,
-        isVoiceTypingOpen = isVoiceTypingOpen,
-        voiceListeningState = voiceListeningState,
-        voiceRmsScaleState = voiceRmsScaleState,
-        onToggleVoiceTyping = onToggleVoiceTyping,
-        onMoveCursorLeft = onMoveCursorLeft,
-        onMoveCursorRight = onMoveCursorRight,
-        onCycleTheme = onCycleTheme,
-        onOpenSettings = onOpenSettings,
-        showCursorArrows = showCursorArrows,
-        buttonPaddingH = buttonPaddingH,
-        badgeFontSize = badgeFontSize,
-      )
-      }
       }
     }
   }
@@ -322,9 +323,11 @@ private fun ToolbarVoiceAndRightActions(
   onOpenSettings: () -> Unit,
   showCursorArrows: Boolean = true,
   buttonPaddingH: Dp = 6.5.dp,
+  rightClusterSpacing: Dp = 1.5.dp,
+  rightArrowIconSize: Dp = 17.dp,
+  rightActionIconSize: Dp = 16.dp,
   badgeFontSize: androidx.compose.ui.unit.TextUnit = 11.sp,
 ) {
-  val density = LocalDensity.current
   val activeVoiceTypingOpen = voiceListeningState?.value ?: isVoiceTypingOpen
 
   SideEffect {
@@ -334,7 +337,7 @@ private fun ToolbarVoiceAndRightActions(
   Row(
     modifier = Modifier.fillMaxHeight().focusProperties { canFocus = false },
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+    horizontalArrangement = Arrangement.spacedBy(rightClusterSpacing),
   ) {
     if (activeVoiceTypingOpen) {
       // Active recording indicator pill - tap stops voice typing silently without click sound
@@ -385,7 +388,7 @@ private fun ToolbarVoiceAndRightActions(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
             contentDescription = stringResource(R.string.cd_cursor_left),
             tint = palette.keyTextPrimary,
-            modifier = Modifier.requiredSize(17.dp),
+            modifier = Modifier.requiredSize(rightArrowIconSize),
           )
         }
 
@@ -399,7 +402,7 @@ private fun ToolbarVoiceAndRightActions(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = stringResource(R.string.cd_cursor_right),
             tint = palette.keyTextPrimary,
-            modifier = Modifier.requiredSize(17.dp),
+            modifier = Modifier.requiredSize(rightArrowIconSize),
           )
         }
       }
@@ -414,7 +417,7 @@ private fun ToolbarVoiceAndRightActions(
           imageVector = Icons.Outlined.Palette,
           contentDescription = "Switch keyboard theme",
           tint = palette.keyTextSecondary,
-          modifier = Modifier.requiredSize(16.dp),
+          modifier = Modifier.requiredSize(rightActionIconSize),
         )
       }
 
@@ -428,7 +431,7 @@ private fun ToolbarVoiceAndRightActions(
           imageVector = Icons.Outlined.Settings,
           contentDescription = stringResource(R.string.cd_open_settings),
           tint = palette.keyTextSecondary,
-          modifier = Modifier.requiredSize(16.dp),
+          modifier = Modifier.requiredSize(rightActionIconSize),
         )
       }
     }
